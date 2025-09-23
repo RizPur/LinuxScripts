@@ -67,10 +67,10 @@ def print_agenda(days):
     future = now + datetime.timedelta(days=days)
 
     events = []
-    # Query both your primary and the Eurecom import calendar
+    # Query both your primary and the school import calendar
     for calendar_id in (
         "primary",
-        os.getenv("EURECOM_CALENDAR_ID", "2v5ivo6m0b3bko8oedcjr5i36orv3lpl@import.calendar.google.com")
+        os.getenv("SCHOOL_CALENDAR_ID", "2v5ivo6m0b3bko8oedcjr5i36orv3lpl@import.calendar.google.com")
     ):
         resp = service.events().list(
             calendarId=calendar_id,
@@ -110,7 +110,7 @@ if __name__ == "__main__":
     subparsers = p.add_subparsers(dest="command")
 
     # Show agenda
-    agenda_parser = subparsers.add_parser("agenda", help="Show calendar agenda")
+    agenda_parser = subparsers.add_parser("list", help="Show calendar agenda")
     agenda_parser.add_argument("days", nargs="?", type=int, default=7)
 
     # Add event
@@ -122,7 +122,7 @@ if __name__ == "__main__":
 
     args = p.parse_args()
 
-    if args.command == "agenda":
+    if args.command == "list":
         print_agenda(args.days)
     elif args.command == "add":
         add_event(args.summary, args.start_time, args.day_offset, args.end_datetime)
