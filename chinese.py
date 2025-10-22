@@ -12,15 +12,47 @@ import datetime
 import subprocess
 import random
 import csv
+import shutil
+import logging
 from pathlib import Path
 from collections import defaultdict
 
-# Paths
+# Load environment variables
+from dotenv import load_dotenv
+
+# Try to find .env in common locations
+env_paths = [
+    Path.home() / "dev" / "scripts" / ".env", # for me, others will probably have the setup below
+    Path.home() / ".env",
+    Path(__file__).parent / ".env",
+]
+
+for env_path in env_paths:
+    if env_path.exists():
+        load_dotenv(env_path)
+        break
+
+# Paths from environment variables
 HOME = Path.home()
-NOTES_DIR = HOME / "eurecom" / "chinese" / "notes"
-CLOUD_DIR = HOME / "Google" / "Chinese"
-CONFIG_FILE = NOTES_DIR / ".cn_config.json"
-REVIEW_DATA_FILE = NOTES_DIR / ".cn_review_data.json"
+NOTES_DIR = Path(os.path.expanduser(os.getenv("CHINESE_NOTES_DIR", "~/eurecom/chinese/notes")))
+CLOUD_DIR = Path(os.path.expanduser(os.getenv("CHINESE_CLOUD_DIR", "~/Google/Chinese")))
+CONFIG_FILE = Path(os.path.expanduser(os.getenv("CHINESE_CONFIG_FILE", "~/eurecom/chinese/notes/.cn_config.json")))
+REVIEW_DATA_FILE = Path(os.path.expanduser(os.getenv("CHINESE_REVIEW_DATA_FILE", "~/eurecom/chinese/notes/.cn_review_data.json")))
+
+# Setup logging
+LOG_DIR = Path(os.path.expanduser(os.getenv("CHINESE_LOG_DIR", "~/dev/scripts/logs")))
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_FILE = LOG_DIR / "cn.log"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE),
+        # logging.StreamHandler()  # Uncomment to also print to console
+    ]
+)
+logger = logging.getLogger('cn')
 
 # Colors for terminal output
 class Colors:
@@ -53,6 +85,7 @@ def save_config(config):
     CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(CONFIG_FILE, 'w') as f:
         json.dump(config, f, indent=2)
+    logger.info(f"Config saved: HSK{config['current_hsk']} Lesson {config['current_lesson']}")
 
 def load_review_data():
     """Load vocab review data"""
@@ -93,6 +126,7 @@ def init_lesson_file(filepath, hsk_level, lesson_num):
 ## Practice Log
 """
         filepath.write_text(content)
+        logger.info(f"Initialized lesson file: {filepath}")
 
 def append_to_section(filepath, section, content, timestamp=True):
     """Append content to a specific section in the markdown file"""
@@ -129,6 +163,7 @@ def append_to_section(filepath, section, content, timestamp=True):
         result.append(entry)
     
     filepath.write_text('\n'.join(result))
+    logger.info(f"Added to {section}: {content[:50]}...")
 
 def parse_lesson_from_path(filepath):
     """Extract HSK level and lesson number from filepath"""
@@ -210,6 +245,8 @@ def update_word_review(review_data, hsk_level, lesson_num, word_id, rating):
     next_date = datetime.date.today() + datetime.timedelta(days=interval)
     word_data['next_review'] = next_date.isoformat()
     
+    logger.info(f"Reviewed word '{word_id}' - rating: {rating}, next review: {next_date}")
+    
     return review_data
 
 # ============ COMMANDS ============
@@ -250,6 +287,52 @@ def cmd_mistake(args):
     append_to_section(filepath, "Common Mistakes", f"❌ {args.content}")
     print(f"{Colors.YELLOW}⚠{Colors.END} Logged mistake to Lesson {config['current_lesson']}")
 
+def cmd_image(args):
+    """Add the most recent screenshot to current lesson notes"""
+    config = load_config()
+    filepath = get_lesson_file(config['current_hsk'], config['current_lesson'])
+    
+    # Create images directory if it doesn't exist
+    images_dir = filepath.parent / "images"
+    images_dir.mkdir(exist_ok=True)
+    
+    # Get most recent screenshot
+    screenshots_dir = Path.home() / "Pictures" / "Screenshots"
+    if not screenshots_dir.exists():
+        print(f"{Colors.RED}✗{Colors.END} Screenshots directory not found!")
+        logger.error("Screenshots directory not found")
+        return
+    
+    screenshots = list(screenshots_dir.glob("*"))
+    if not screenshots:
+        print(f"{Colors.RED}✗{Colors.END} No screenshots found!")
+        logger.error("No screenshots found")
+        return
+    
+    # Get most recent by modification time
+    latest_screenshot = max(screenshots, key=lambda p: p.stat().st_mtime)
+    
+    print(f"{Colors.CYAN}Found:{Colors.END} {latest_screenshot.name}")
+    
+    # Copy to images directory with timestamp
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    dest_name = f"screenshot_{timestamp}{latest_screenshot.suffix}"
+    dest = images_dir / dest_name
+    
+    shutil.copy(latest_screenshot, dest)
+    logger.info(f"Copied screenshot: {latest_screenshot.name} → {dest_name}")
+    
+    # Add to notes
+    relative_path = f"images/{dest_name}"
+    caption = args.caption or "Screenshot"
+    markdown = f"![{caption}]({relative_path})"
+    
+    section = args.section or "Grammar Points"
+    append_to_section(filepath, section, markdown, timestamp=False)
+    
+    print(f"{Colors.GREEN}✓{Colors.END} Added screenshot to {section}")
+    print(f"  Caption: {caption}")
+
 def cmd_practice(args):
     """Get a random sentence to practice"""
     config = load_config()
@@ -279,6 +362,7 @@ def cmd_practice(args):
         return
     
     sentence = random.choice(examples)
+    logger.info(f"Practice sentence: {sentence}")
     print(f"{Colors.BLUE}Practice this:{Colors.END} {Colors.BOLD}{sentence}{Colors.END}")
 
 def cmd_show(args):
@@ -307,17 +391,19 @@ def cmd_import(args):
     csv_path = Path(args.csv_file)
     if not csv_path.exists():
         print(f"{Colors.RED}✗{Colors.END} CSV file not found: {csv_path}")
+        logger.error(f"CSV not found: {csv_path}")
         return
     
     # Copy to words directory
     words_dir = get_words_dir(hsk)
     dest_path = words_dir / f"lesson_{lesson:02d}.csv"
     
-    import shutil
     shutil.copy(csv_path, dest_path)
     
     # Count words
     words = parse_languageplayer_csv(dest_path)
+    
+    logger.info(f"Imported {len(words)} words to HSK{hsk} Lesson {lesson} from {csv_path}")
     
     print(f"{Colors.GREEN}✓{Colors.END} Imported {len(words)} words to HSK{hsk} Lesson {lesson}")
     print(f"  Saved to: {dest_path}")
@@ -345,10 +431,12 @@ def cmd_vocab(args):
         if not words_to_study:
             print(f"{Colors.GREEN}✓{Colors.END} You've already studied all words in this lesson!")
             return
+        logger.info(f"Starting to learn {len(words_to_study)} new words")
         print(f"{Colors.CYAN}Learning {len(words_to_study)} new words...{Colors.END}\n")
     elif args.all:
         all_words = parse_languageplayer_csv(csv_path)
         words_to_study = all_words
+        logger.info(f"Reviewing all {len(words_to_study)} words")
         print(f"{Colors.CYAN}Reviewing all {len(words_to_study)} words...{Colors.END}\n")
     else:
         # Default: review due words
@@ -361,6 +449,7 @@ def cmd_vocab(args):
         # Load full word data from CSV
         all_words = {w['simplified']: w for w in parse_languageplayer_csv(csv_path)}
         words_to_study = [all_words.get(w['id']) for w in due_words if all_words.get(w['id'])]
+        logger.info(f"Reviewing {len(words_to_study)} due words")
         print(f"{Colors.CYAN}Reviewing {len(words_to_study)} due words...{Colors.END}\n")
     
     # Review each word
@@ -401,6 +490,7 @@ def cmd_vocab(args):
         
         print()
     
+    logger.info(f"Completed vocab review session - {len(words_to_study)} words")
     print(f"{Colors.GREEN}✓{Colors.END} Review complete! Great work! 加油！")
 
 def cmd_stats(args):
@@ -454,6 +544,7 @@ def cmd_sync(args):
         print(f"{Colors.BLUE}Dry run - would sync:{Colors.END}")
         print(result.stdout)
     else:
+        logger.info(f"Synced notes to Google Drive")
         print(f"{Colors.GREEN}✓{Colors.END} Synced notes to Google Drive!")
         if args.verbose:
             print(result.stdout)
@@ -480,6 +571,11 @@ def main():
     mistake_parser = subparsers.add_parser('mistake', help='Log a common mistake')
     mistake_parser.add_argument('content', help='Mistake description')
     
+    # image command
+    image_parser = subparsers.add_parser('image', help='Add latest screenshot to notes')
+    image_parser.add_argument('--caption', default='Screenshot', help='Image caption')
+    image_parser.add_argument('--section', default='Grammar Points', help='Section to add to')
+    
     # practice command
     practice_parser = subparsers.add_parser('practice', help='Get random sentence to practice')
     
@@ -487,18 +583,18 @@ def main():
     show_parser = subparsers.add_parser('show', help='Show current lesson notes')
     show_parser.add_argument('-e', '--edit', action='store_true', help='Open in editor')
     
-    # import command (NEW!)
+    # import command
     import_parser = subparsers.add_parser('import', help='Import vocab from LanguagePlayer CSV')
     import_parser.add_argument('csv_file', help='Path to CSV file')
     import_parser.add_argument('--lesson', type=int, help='Lesson number (default: current)')
     import_parser.add_argument('--hsk', type=int, help='HSK level (default: current)')
     
-    # vocab command (NEW!)
+    # vocab command
     vocab_parser = subparsers.add_parser('vocab', help='Review vocabulary')
     vocab_parser.add_argument('--new', type=int, help='Learn N new words')
     vocab_parser.add_argument('--all', action='store_true', help='Review all words')
     
-    # stats command (NEW!)
+    # stats command
     stats_parser = subparsers.add_parser('stats', help='Show vocabulary statistics')
     
     # sync command
@@ -512,21 +608,27 @@ def main():
         parser.print_help()
         return
     
-    # Route to appropriate command
-    commands = {
-        'lesson': cmd_lesson,
-        'note': cmd_note,
-        'example': cmd_example,
-        'mistake': cmd_mistake,
-        'practice': cmd_practice,
-        'show': cmd_show,
-        'import': cmd_import,
-        'vocab': cmd_vocab,
-        'stats': cmd_stats,
-        'sync': cmd_sync,
-    }
-    
-    commands[args.command](args)
+    try:
+        # Route to appropriate command
+        commands = {
+            'lesson': cmd_lesson,
+            'note': cmd_note,
+            'example': cmd_example,
+            'mistake': cmd_mistake,
+            'image': cmd_image,
+            'practice': cmd_practice,
+            'show': cmd_show,
+            'import': cmd_import,
+            'vocab': cmd_vocab,
+            'stats': cmd_stats,
+            'sync': cmd_sync,
+        }
+        
+        commands[args.command](args)
+    except Exception as e:
+        logger.error(f"Error executing command '{args.command}': {str(e)}", exc_info=True)
+        print(f"{Colors.RED}✗ Error:{Colors.END} {str(e)}")
+        sys.exit(1)
 
 if __name__ == '__main__':
     main()

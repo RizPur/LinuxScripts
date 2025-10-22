@@ -57,3 +57,4 @@ token.pickle
 
 # Old directory (as requested)
 old/
+logs/
