@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Chinese Notes CLI Tool
-Organize your HSK learning with markdown notes
+All-in-one HSK learning: notes + vocab review with spaced repetition
 """
 
 import os
@@ -11,13 +11,16 @@ import json
 import datetime
 import subprocess
 import random
+import csv
 from pathlib import Path
+from collections import defaultdict
 
 # Paths
 HOME = Path.home()
 NOTES_DIR = HOME / "eurecom" / "chinese" / "notes"
 CLOUD_DIR = HOME / "Google" / "Chinese"
 CONFIG_FILE = NOTES_DIR / ".cn_config.json"
+REVIEW_DATA_FILE = NOTES_DIR / ".cn_review_data.json"
 
 # Colors for terminal output
 class Colors:
@@ -26,7 +29,17 @@ class Colors:
     YELLOW = '\033[93m'
     RED = '\033[91m'
     BOLD = '\033[1m'
+    CYAN = '\033[96m'
+    MAGENTA = '\033[95m'
     END = '\033[0m'
+
+# Spaced repetition intervals (in days)
+SR_INTERVALS = {
+    'again': 0,      # Review today
+    'hard': 1,       # Review tomorrow
+    'good': 3,       # Review in 3 days
+    'easy': 7,       # Review in 7 days
+}
 
 def load_config():
     """Load configuration (current lesson, etc.)"""
@@ -41,11 +54,30 @@ def save_config(config):
     with open(CONFIG_FILE, 'w') as f:
         json.dump(config, f, indent=2)
 
+def load_review_data():
+    """Load vocab review data"""
+    if REVIEW_DATA_FILE.exists():
+        with open(REVIEW_DATA_FILE, 'r') as f:
+            return json.load(f)
+    return {}
+
+def save_review_data(data):
+    """Save vocab review data"""
+    REVIEW_DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(REVIEW_DATA_FILE, 'w') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
 def get_lesson_file(hsk_level, lesson_num):
     """Get the markdown file path for a lesson"""
     lesson_dir = NOTES_DIR / f"HSK{hsk_level}"
     lesson_dir.mkdir(parents=True, exist_ok=True)
     return lesson_dir / f"Lesson_{lesson_num:02d}.md"
+
+def get_words_dir(hsk_level):
+    """Get the words directory for an HSK level"""
+    words_dir = NOTES_DIR / f"HSK{hsk_level}" / "words"
+    words_dir.mkdir(parents=True, exist_ok=True)
+    return words_dir
 
 def init_lesson_file(filepath, hsk_level, lesson_num):
     """Initialize a new lesson markdown file"""
@@ -104,6 +136,83 @@ def parse_lesson_from_path(filepath):
     hsk = int(parts[-2].replace('HSK', ''))
     lesson = int(parts[-1].replace('Lesson_', '').replace('.md', ''))
     return hsk, lesson
+
+def parse_languageplayer_csv(csv_path):
+    """Parse LanguagePlayer CSV and extract vocab"""
+    words = []
+    with open(csv_path, 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            word = {
+                'simplified': row.get('simplified', ''),
+                'pinyin': row.get('pinyin', ''),
+                'definitions': row.get('definitions', ''),
+                'example': row.get('example', ''),
+                'example_translation': row.get('exampleTranslation', ''),
+            }
+            if word['simplified']:  # Only add if there's a character
+                words.append(word)
+    return words
+
+def get_due_words(review_data, hsk_level, lesson_num):
+    """Get words due for review"""
+    today = datetime.date.today().isoformat()
+    key = f"HSK{hsk_level}_L{lesson_num}"
+    
+    if key not in review_data:
+        return []
+    
+    due_words = []
+    for word_id, data in review_data[key].items():
+        if data.get('next_review', today) <= today:
+            due_words.append({'id': word_id, **data})
+    
+    return due_words
+
+def get_new_words(csv_path, review_data, hsk_level, lesson_num, limit=10):
+    """Get new words that haven't been studied yet"""
+    words = parse_languageplayer_csv(csv_path)
+    key = f"HSK{hsk_level}_L{lesson_num}"
+    
+    if key not in review_data:
+        review_data[key] = {}
+    
+    new_words = []
+    for word in words:
+        word_id = word['simplified']
+        if word_id not in review_data[key]:
+            new_words.append(word)
+            if len(new_words) >= limit:
+                break
+    
+    return new_words
+
+def update_word_review(review_data, hsk_level, lesson_num, word_id, rating):
+    """Update review data for a word based on rating"""
+    key = f"HSK{hsk_level}_L{lesson_num}"
+    
+    if key not in review_data:
+        review_data[key] = {}
+    
+    if word_id not in review_data[key]:
+        review_data[key][word_id] = {
+            'reviews': 0,
+            'last_review': None,
+            'next_review': None,
+        }
+    
+    word_data = review_data[key][word_id]
+    word_data['reviews'] += 1
+    word_data['last_review'] = datetime.date.today().isoformat()
+    
+    # Calculate next review date
+    interval = SR_INTERVALS.get(rating, 1)
+    next_date = datetime.date.today() + datetime.timedelta(days=interval)
+    word_data['next_review'] = next_date.isoformat()
+    
+    return review_data
+
+# ============ COMMANDS ============
 
 def cmd_lesson(args):
     """Set current lesson"""
@@ -188,6 +297,142 @@ def cmd_show(args):
     else:
         print(filepath.read_text())
 
+def cmd_import(args):
+    """Import vocab from LanguagePlayer CSV"""
+    config = load_config()
+    hsk = args.hsk or config['current_hsk']
+    lesson = args.lesson or config['current_lesson']
+    
+    # Check if CSV exists
+    csv_path = Path(args.csv_file)
+    if not csv_path.exists():
+        print(f"{Colors.RED}✗{Colors.END} CSV file not found: {csv_path}")
+        return
+    
+    # Copy to words directory
+    words_dir = get_words_dir(hsk)
+    dest_path = words_dir / f"lesson_{lesson:02d}.csv"
+    
+    import shutil
+    shutil.copy(csv_path, dest_path)
+    
+    # Count words
+    words = parse_languageplayer_csv(dest_path)
+    
+    print(f"{Colors.GREEN}✓{Colors.END} Imported {len(words)} words to HSK{hsk} Lesson {lesson}")
+    print(f"  Saved to: {dest_path}")
+    print(f"\n{Colors.CYAN}Start learning:{Colors.END} cn vocab --new 10")
+
+def cmd_vocab(args):
+    """Review vocabulary with spaced repetition"""
+    config = load_config()
+    review_data = load_review_data()
+    hsk = config['current_hsk']
+    lesson = config['current_lesson']
+    
+    # Get CSV path
+    words_dir = get_words_dir(hsk)
+    csv_path = words_dir / f"lesson_{lesson:02d}.csv"
+    
+    if not csv_path.exists():
+        print(f"{Colors.RED}✗{Colors.END} No vocab imported for HSK{hsk} Lesson {lesson}")
+        print(f"  Import with: cn import <csv_file>")
+        return
+    
+    # Determine what to review
+    if args.new:
+        words_to_study = get_new_words(csv_path, review_data, hsk, lesson, args.new)
+        if not words_to_study:
+            print(f"{Colors.GREEN}✓{Colors.END} You've already studied all words in this lesson!")
+            return
+        print(f"{Colors.CYAN}Learning {len(words_to_study)} new words...{Colors.END}\n")
+    elif args.all:
+        all_words = parse_languageplayer_csv(csv_path)
+        words_to_study = all_words
+        print(f"{Colors.CYAN}Reviewing all {len(words_to_study)} words...{Colors.END}\n")
+    else:
+        # Default: review due words
+        due_words = get_due_words(review_data, hsk, lesson)
+        if not due_words:
+            print(f"{Colors.GREEN}✓{Colors.END} No words due for review!")
+            print(f"  Learn new words: cn vocab --new 10")
+            return
+        
+        # Load full word data from CSV
+        all_words = {w['simplified']: w for w in parse_languageplayer_csv(csv_path)}
+        words_to_study = [all_words.get(w['id']) for w in due_words if all_words.get(w['id'])]
+        print(f"{Colors.CYAN}Reviewing {len(words_to_study)} due words...{Colors.END}\n")
+    
+    # Review each word
+    for i, word in enumerate(words_to_study, 1):
+        if not word:
+            continue
+            
+        print(f"{Colors.BOLD}[{i}/{len(words_to_study)}]{Colors.END}")
+        print(f"{Colors.MAGENTA}Character:{Colors.END} {Colors.BOLD}{word['simplified']}{Colors.END}")
+        
+        input(f"{Colors.CYAN}Think of the meaning... (press Enter to reveal){Colors.END}")
+        
+        print(f"{Colors.GREEN}Pinyin:{Colors.END} {word['pinyin']}")
+        print(f"{Colors.GREEN}Meaning:{Colors.END} {word['definitions']}")
+        
+        if word.get('example'):
+            print(f"{Colors.BLUE}Example:{Colors.END} {word['example']}")
+            if word.get('example_translation'):
+                print(f"  → {word['example_translation']}")
+        
+        print(f"\n{Colors.YELLOW}How well did you know it?{Colors.END}")
+        print("  1 = Again (didn't know)")
+        print("  2 = Hard (barely knew)")
+        print("  3 = Good (knew it)")
+        print("  4 = Easy (knew it perfectly)")
+        
+        while True:
+            rating_input = input(f"{Colors.CYAN}Rating [1-4]:{Colors.END} ").strip()
+            if rating_input in ['1', '2', '3', '4']:
+                break
+            print("Please enter 1, 2, 3, or 4")
+        
+        rating_map = {'1': 'again', '2': 'hard', '3': 'good', '4': 'easy'}
+        rating = rating_map[rating_input]
+        
+        review_data = update_word_review(review_data, hsk, lesson, word['simplified'], rating)
+        save_review_data(review_data)
+        
+        print()
+    
+    print(f"{Colors.GREEN}✓{Colors.END} Review complete! Great work! 加油！")
+
+def cmd_stats(args):
+    """Show vocabulary statistics"""
+    config = load_config()
+    review_data = load_review_data()
+    hsk = config['current_hsk']
+    lesson = config['current_lesson']
+    
+    # Get CSV path
+    words_dir = get_words_dir(hsk)
+    csv_path = words_dir / f"lesson_{lesson:02d}.csv"
+    
+    if not csv_path.exists():
+        print(f"{Colors.YELLOW}⚠{Colors.END} No vocab imported for HSK{hsk} Lesson {lesson}")
+        return
+    
+    all_words = parse_languageplayer_csv(csv_path)
+    total_words = len(all_words)
+    
+    key = f"HSK{hsk}_L{lesson}"
+    studied = len(review_data.get(key, {}))
+    new = total_words - studied
+    
+    due = len(get_due_words(review_data, hsk, lesson))
+    
+    print(f"{Colors.BOLD}📊 HSK{hsk} Lesson {lesson} Stats{Colors.END}")
+    print(f"  Total words: {total_words}")
+    print(f"  {Colors.GREEN}Studied: {studied}{Colors.END}")
+    print(f"  {Colors.CYAN}New: {new}{Colors.END}")
+    print(f"  {Colors.YELLOW}Due for review: {due}{Colors.END}")
+
 def cmd_sync(args):
     """Sync notes to Google Drive"""
     if not NOTES_DIR.exists():
@@ -214,7 +459,7 @@ def cmd_sync(args):
             print(result.stdout)
 
 def main():
-    parser = argparse.ArgumentParser(description='Chinese Notes CLI Tool')
+    parser = argparse.ArgumentParser(description='Chinese Notes & Vocab CLI Tool')
     subparsers = parser.add_subparsers(dest='command', help='Commands')
     
     # lesson command
@@ -242,6 +487,20 @@ def main():
     show_parser = subparsers.add_parser('show', help='Show current lesson notes')
     show_parser.add_argument('-e', '--edit', action='store_true', help='Open in editor')
     
+    # import command (NEW!)
+    import_parser = subparsers.add_parser('import', help='Import vocab from LanguagePlayer CSV')
+    import_parser.add_argument('csv_file', help='Path to CSV file')
+    import_parser.add_argument('--lesson', type=int, help='Lesson number (default: current)')
+    import_parser.add_argument('--hsk', type=int, help='HSK level (default: current)')
+    
+    # vocab command (NEW!)
+    vocab_parser = subparsers.add_parser('vocab', help='Review vocabulary')
+    vocab_parser.add_argument('--new', type=int, help='Learn N new words')
+    vocab_parser.add_argument('--all', action='store_true', help='Review all words')
+    
+    # stats command (NEW!)
+    stats_parser = subparsers.add_parser('stats', help='Show vocabulary statistics')
+    
     # sync command
     sync_parser = subparsers.add_parser('sync', help='Sync notes to Google Drive')
     sync_parser.add_argument('--dry-run', action='store_true', help='Preview sync without making changes')
@@ -261,6 +520,9 @@ def main():
         'mistake': cmd_mistake,
         'practice': cmd_practice,
         'show': cmd_show,
+        'import': cmd_import,
+        'vocab': cmd_vocab,
+        'stats': cmd_stats,
         'sync': cmd_sync,
     }
     
