@@ -14,6 +14,7 @@ import random
 import csv
 import shutil
 import logging
+import requests
 from pathlib import Path
 from collections import defaultdict
 
@@ -38,6 +39,7 @@ NOTES_DIR = Path(os.path.expanduser(os.getenv("CHINESE_NOTES_DIR", "~/eurecom/ch
 CLOUD_DIR = Path(os.path.expanduser(os.getenv("CHINESE_CLOUD_DIR", "~/Google/Chinese")))
 CONFIG_FILE = Path(os.path.expanduser(os.getenv("CHINESE_CONFIG_FILE", "~/eurecom/chinese/notes/.cn_config.json")))
 REVIEW_DATA_FILE = Path(os.path.expanduser(os.getenv("CHINESE_REVIEW_DATA_FILE", "~/eurecom/chinese/notes/.cn_review_data.json")))
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # Setup logging
 LOG_DIR = Path(os.path.expanduser(os.getenv("CHINESE_LOG_DIR", "~/dev/scripts/logs")))
@@ -246,8 +248,67 @@ def update_word_review(review_data, hsk_level, lesson_num, word_id, rating):
     word_data['next_review'] = next_date.isoformat()
     
     logger.info(f"Reviewed word '{word_id}' - rating: {rating}, next review: {next_date}")
-    
+
     return review_data
+
+def enhance_notes_with_ai(notes_text, section_type="general"):
+    """Use OpenAI GPT-3.5 to make notes more readable and structured"""
+    if not OPENAI_API_KEY:
+        raise ValueError("OPENAI_API_KEY not found in environment variables")
+
+    # Build prompt based on section type
+    prompts = {
+        "grammar": "You are helping a Chinese language learner improve their grammar notes. Make them more clear, structured, and add helpful examples or clarifications where needed. Keep Chinese characters, pinyin, and key concepts intact.",
+        "examples": """You are helping enhance Chinese language example sentences. For EACH example sentence, add:
+1. Full pinyin (with tone marks)
+2. English translation (if not present)
+3. Brief explanatory notes highlighting grammar patterns, key vocabulary, or cultural context
+4. If the sentence demonstrates a specific grammar point, mention it
+
+Format each example clearly with proper markdown. Make the examples educational and useful for review.""",
+        "mistakes": "You are helping document common mistakes in Chinese language learning. Make the explanations clearer and add tips to avoid these mistakes.",
+        "general": "You are helping organize Chinese language learning notes. Make them more readable, well-structured, and easier to review later. Keep all Chinese characters and pinyin intact."
+    }
+
+    prompt = f"""{prompts.get(section_type, prompts["general"])}
+
+Original notes:
+{notes_text}
+
+Please rewrite these notes to be more readable and well-organized. Keep all Chinese characters, pinyin, and core content. Focus on clarity and structure. Return ONLY the improved notes without any meta-commentary."""
+
+    try:
+        response = requests.post(
+            'https://api.openai.com/v1/chat/completions',
+            headers={
+                'Authorization': f'Bearer {OPENAI_API_KEY}',
+                'Content-Type': 'application/json',
+            },
+            json={
+                'model': 'gpt-3.5-turbo',
+                'messages': [{'role': 'user', 'content': prompt}],
+                'max_tokens': 1000,
+                'temperature': 0.7
+            },
+            timeout=30
+        )
+
+        if not response.ok:
+            raise Exception(f"OpenAI API error: {response.status_code} - {response.text}")
+
+        data = response.json()
+        enhanced_text = data['choices'][0]['message']['content'].strip()
+
+        logger.info(f"Successfully enhanced notes using AI (section: {section_type})")
+        return enhanced_text
+
+    except requests.exceptions.Timeout:
+        raise Exception("OpenAI API request timed out. Please try again.")
+    except requests.exceptions.RequestException as e:
+        raise Exception(f"Network error calling OpenAI API: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error enhancing notes with AI: {str(e)}")
+        raise
 
 # ============ COMMANDS ============
 
@@ -264,27 +325,27 @@ def cmd_note(args):
     """Add a grammar note"""
     config = load_config()
     filepath = get_lesson_file(config['current_hsk'], config['current_lesson'])
-    append_to_section(filepath, "Grammar Points", args.content)
+    append_to_section(filepath, "Grammar Points", args.content, timestamp=False)
     print(f"{Colors.GREEN}✓{Colors.END} Added grammar note to Lesson {config['current_lesson']}")
 
 def cmd_example(args):
     """Add an example sentence"""
     config = load_config()
     filepath = get_lesson_file(config['current_hsk'], config['current_lesson'])
-    
+
     if args.translation:
         content = f"**{args.sentence}** — {args.translation}"
     else:
         content = f"**{args.sentence}**"
-    
-    append_to_section(filepath, "Example Sentences", content)
+
+    append_to_section(filepath, "Example Sentences", content, timestamp=False)
     print(f"{Colors.GREEN}✓{Colors.END} Added example to Lesson {config['current_lesson']}")
 
 def cmd_mistake(args):
     """Log a common mistake"""
     config = load_config()
     filepath = get_lesson_file(config['current_hsk'], config['current_lesson'])
-    append_to_section(filepath, "Common Mistakes", f"❌ {args.content}")
+    append_to_section(filepath, "Common Mistakes", f"❌ {args.content}", timestamp=False)
     print(f"{Colors.YELLOW}⚠{Colors.END} Logged mistake to Lesson {config['current_lesson']}")
 
 def cmd_image(args):
@@ -523,6 +584,112 @@ def cmd_stats(args):
     print(f"  {Colors.CYAN}New: {new}{Colors.END}")
     print(f"  {Colors.YELLOW}Due for review: {due}{Colors.END}")
 
+def cmd_enhance(args):
+    """Enhance notes with AI to make them more readable"""
+    config = load_config()
+    filepath = get_lesson_file(config['current_hsk'], config['current_lesson'])
+
+    if not filepath.exists():
+        print(f"{Colors.RED}✗{Colors.END} No notes for HSK{config['current_hsk']} Lesson {config['current_lesson']} yet!")
+        return
+
+    # Determine which sections to enhance
+    if args.all:
+        sections_to_enhance = ["Grammar Points", "Example Sentences", "Common Mistakes"]
+    elif args.section:
+        sections_to_enhance = [args.section]
+    else:
+        # Default: enhance all main sections
+        sections_to_enhance = ["Grammar Points", "Example Sentences", "Common Mistakes"]
+
+    # Create backup if requested
+    if args.backup:
+        backup_path = filepath.with_suffix('.md.backup')
+        shutil.copy(filepath, backup_path)
+        print(f"{Colors.GREEN}✓{Colors.END} Backup saved to {backup_path.name}")
+
+    # Enhance each section
+    for section_name in sections_to_enhance:
+        # Read the current notes (fresh each time in case we modified it)
+        text = filepath.read_text()
+        section_header = f"## {section_name}"
+
+        if section_header not in text:
+            print(f"{Colors.YELLOW}⚠{Colors.END} Section '{section_name}' not found in notes, skipping...")
+            continue
+
+        # Extract section content
+        lines = text.split('\n')
+        section_content = []
+        in_section = False
+        section_start_idx = -1
+        section_end_idx = -1
+
+        for i, line in enumerate(lines):
+            if line.startswith(section_header):
+                in_section = True
+                section_start_idx = i
+            elif in_section and line.startswith('##'):
+                section_end_idx = i
+                break
+            elif in_section:
+                section_content.append(line)
+
+        if section_end_idx == -1:
+            section_end_idx = len(lines)
+
+        section_text = '\n'.join(section_content).strip()
+
+        if not section_text:
+            print(f"{Colors.YELLOW}⚠{Colors.END} Section '{section_name}' is empty, skipping...")
+            continue
+
+        print(f"\n{Colors.CYAN}Enhancing '{section_name}' with AI...{Colors.END}")
+        logger.info(f"Enhancing section '{section_name}' for HSK{config['current_hsk']} Lesson {config['current_lesson']}")
+
+        try:
+            # Determine section type for better prompting
+            section_type_map = {
+                "Grammar Points": "grammar",
+                "Example Sentences": "examples",
+                "Common Mistakes": "mistakes"
+            }
+            section_type = section_type_map.get(section_name, "general")
+
+            enhanced_content = enhance_notes_with_ai(section_text, section_type)
+
+            # Show preview
+            print(f"\n{Colors.BOLD}Original:{Colors.END}")
+            print(section_text[:200] + "..." if len(section_text) > 200 else section_text)
+            print(f"\n{Colors.BOLD}Enhanced:{Colors.END}")
+            print(enhanced_content[:200] + "..." if len(enhanced_content) > 200 else enhanced_content)
+
+            # Ask for confirmation
+            if not args.yes:
+                confirm = input(f"\n{Colors.YELLOW}Apply these changes to '{section_name}'? [y/N]:{Colors.END} ").strip().lower()
+                if confirm != 'y':
+                    print(f"{Colors.BLUE}ℹ{Colors.END} Skipped '{section_name}'.")
+                    continue
+
+            # Replace the section content
+            new_lines = lines[:section_start_idx+1] + [enhanced_content] + lines[section_end_idx:]
+            new_text = '\n'.join(new_lines)
+
+            # Write enhanced content
+            filepath.write_text(new_text)
+
+            print(f"{Colors.GREEN}✓{Colors.END} Enhanced '{section_name}' with AI!")
+            logger.info(f"Successfully enhanced section '{section_name}'")
+
+        except ValueError as e:
+            print(f"{Colors.RED}✗{Colors.END} {str(e)}")
+            print(f"{Colors.YELLOW}ℹ{Colors.END} Make sure OPENAI_API_KEY is set in your .env file")
+            continue
+        except Exception as e:
+            print(f"{Colors.RED}✗ Error:{Colors.END} {str(e)}")
+            logger.error(f"Failed to enhance notes: {str(e)}")
+            continue
+
 def cmd_sync(args):
     """Sync notes to Google Drive"""
     if not NOTES_DIR.exists():
@@ -551,59 +718,101 @@ def cmd_sync(args):
 
 def main():
     parser = argparse.ArgumentParser(description='Chinese Notes & Vocab CLI Tool')
+
+    # Quick action flags (alternatives to subcommands)
+    parser.add_argument('-n', '--note', metavar='CONTENT', help='Add a grammar note')
+    parser.add_argument('-e', '--example', nargs='+', metavar=('SENTENCE', 'TRANSLATION'), help='Add example sentence (sentence + optional translation)')
+    parser.add_argument('-m', '--mistake', metavar='CONTENT', help='Log a common mistake')
+
     subparsers = parser.add_subparsers(dest='command', help='Commands')
-    
+
     # lesson command
     lesson_parser = subparsers.add_parser('lesson', help='Set current lesson')
     lesson_parser.add_argument('lesson_num', type=int, help='Lesson number')
     lesson_parser.add_argument('--hsk', type=int, help='HSK level (default: current)')
-    
+
     # note command
     note_parser = subparsers.add_parser('note', help='Add a grammar note')
     note_parser.add_argument('content', help='Note content')
-    
+
     # example command
     example_parser = subparsers.add_parser('example', help='Add an example sentence')
     example_parser.add_argument('sentence', help='Chinese sentence')
     example_parser.add_argument('translation', nargs='?', help='English translation (optional)')
-    
+
     # mistake command
     mistake_parser = subparsers.add_parser('mistake', help='Log a common mistake')
     mistake_parser.add_argument('content', help='Mistake description')
-    
+
     # image command
     image_parser = subparsers.add_parser('image', help='Add latest screenshot to notes')
     image_parser.add_argument('--caption', default='Screenshot', help='Image caption')
     image_parser.add_argument('--section', default='Grammar Points', help='Section to add to')
-    
+
     # practice command
     practice_parser = subparsers.add_parser('practice', help='Get random sentence to practice')
-    
+
     # show command
     show_parser = subparsers.add_parser('show', help='Show current lesson notes')
-    show_parser.add_argument('-e', '--edit', action='store_true', help='Open in editor')
-    
+    show_parser.add_argument('--edit', action='store_true', help='Open in editor')
+
     # import command
     import_parser = subparsers.add_parser('import', help='Import vocab from LanguagePlayer CSV')
     import_parser.add_argument('csv_file', help='Path to CSV file')
     import_parser.add_argument('--lesson', type=int, help='Lesson number (default: current)')
     import_parser.add_argument('--hsk', type=int, help='HSK level (default: current)')
-    
+
     # vocab command
     vocab_parser = subparsers.add_parser('vocab', help='Review vocabulary')
     vocab_parser.add_argument('--new', type=int, help='Learn N new words')
     vocab_parser.add_argument('--all', action='store_true', help='Review all words')
-    
+
     # stats command
     stats_parser = subparsers.add_parser('stats', help='Show vocabulary statistics')
-    
+
+    # enhance command
+    enhance_parser = subparsers.add_parser('enhance', help='Enhance notes with AI for better readability')
+    enhance_parser.add_argument('--section', help='Section to enhance (e.g., "Example Sentences", "Grammar Points", "Common Mistakes")')
+    enhance_parser.add_argument('--all', action='store_true', help='Enhance all sections (Grammar Points, Example Sentences, Common Mistakes)')
+    enhance_parser.add_argument('-y', '--yes', action='store_true', help='Skip confirmation prompt')
+    enhance_parser.add_argument('--backup', action='store_true', help='Create backup before modifying')
+
     # sync command
     sync_parser = subparsers.add_parser('sync', help='Sync notes to Google Drive')
     sync_parser.add_argument('--dry-run', action='store_true', help='Preview sync without making changes')
     sync_parser.add_argument('-v', '--verbose', action='store_true', help='Verbose output')
-    
+
     args = parser.parse_args()
-    
+
+    # Handle quick action flags
+    config = load_config()
+
+    if args.note:
+        filepath = get_lesson_file(config['current_hsk'], config['current_lesson'])
+        append_to_section(filepath, "Grammar Points", args.note, timestamp=False)
+        print(f"{Colors.GREEN}✓{Colors.END} Added grammar note to Lesson {config['current_lesson']}")
+        return
+
+    if args.example:
+        filepath = get_lesson_file(config['current_hsk'], config['current_lesson'])
+        sentence = args.example[0]
+        translation = args.example[1] if len(args.example) > 1 else None
+
+        if translation:
+            content = f"**{sentence}** — {translation}"
+        else:
+            content = f"**{sentence}**"
+
+        append_to_section(filepath, "Example Sentences", content, timestamp=False)
+        print(f"{Colors.GREEN}✓{Colors.END} Added example to Lesson {config['current_lesson']}")
+        return
+
+    if args.mistake:
+        filepath = get_lesson_file(config['current_hsk'], config['current_lesson'])
+        append_to_section(filepath, "Common Mistakes", f"❌ {args.mistake}", timestamp=False)
+        print(f"{Colors.YELLOW}⚠{Colors.END} Logged mistake to Lesson {config['current_lesson']}")
+        return
+
     if not args.command:
         parser.print_help()
         return
@@ -621,9 +830,10 @@ def main():
             'import': cmd_import,
             'vocab': cmd_vocab,
             'stats': cmd_stats,
+            'enhance': cmd_enhance,
             'sync': cmd_sync,
         }
-        
+
         commands[args.command](args)
     except Exception as e:
         logger.error(f"Error executing command '{args.command}': {str(e)}", exc_info=True)

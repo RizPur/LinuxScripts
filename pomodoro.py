@@ -75,6 +75,10 @@ class Pomodoro:
                 self.countdown(self.long_break, "☕ LONG BREAK - You earned it!")
                 self.play_sound()
                 self.log_session("Long Break", self.long_break)
+
+                self.notify("Long Break Complete!",
+                           "Great session! All cycles finished.",
+                           "critical")
                 break
             else:
                 # Short break between cycles
@@ -83,11 +87,14 @@ class Pomodoro:
                            "normal")
                 
                 self.countdown(self.short_break, f"☕ SHORT BREAK - {self.cycles - cycle} cycles left")
-                
+
                 self.play_sound()
                 self.log_session("Short Break", self.short_break)
-                
+
                 print("\n⏰ Break's over! Get ready for the next round...")
+                self.notify("Break Complete!",
+                           f"Time to get back to work - Cycle {cycle+1} starting",
+                           "critical")
                 input("Press ENTER to continue...")
         
         print("\n" + "="*50)
