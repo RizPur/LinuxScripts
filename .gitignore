@@ -2,6 +2,7 @@
 .env
 .env.local
 .env.*.local
+.claude/
 
 # Log files
 logs.log
@@ -55,6 +56,6 @@ Thumbs.db
 credentials.json
 token.pickle
 
-# Old directory (as requested)
+# Old directory 
 old/
 logs/
