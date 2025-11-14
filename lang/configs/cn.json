@@ -1,0 +1,41 @@
+{
+  "language": "chinese",
+  "language_full": "Chinese",
+  "command_alias": "cn",
+  "case_insensitive_keys": false,
+  "default_input_lang": "en",
+  "levels": {
+    "type": "HSK",
+    "values": [1, 2, 3, 4, 5, 6],
+    "default": 1
+  },
+  "fields": {
+    "primary": "Hanzi",
+    "phonetic": "Pinyin",
+    "translation": "English",
+    "example": "ExampleSentence",
+    "example_translation": "ExampleTranslation",
+    "grammar": "Grammar"
+  },
+  "anki": {
+    "model_name": "Chinese (CLI)",
+    "deck_prefix": "Chinese::HSK",
+    "tag_prefix": "hsk",
+    "field_mapping": {
+      "Hanzi": "Hanzi",
+      "Pinyin": "Pinyin",
+      "English": "English",
+      "ExampleSentence": "ExampleSentence",
+      "ExampleTranslation": "ExampleTranslation",
+      "Lesson": "Lesson"
+    }
+  },
+  "storage": {
+    "vocab_file": "chinese_vocab.json",
+    "config_file": ".cn_config.json",
+    "data_dir": "zh"
+  },
+  "ai": {
+    "prompt_template": "You are a {language_full} language teacher. A student at {level_type} Level {level} has given you a word/phrase. The phrase is: \"{phrase}\" (input language: {lang})."
+  }
+}

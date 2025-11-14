@@ -36,6 +36,7 @@ DEFAULT_FRENCH_DIR = SCRIPT_DIR / 'fr'
 FRENCH_DIR = Path(os.path.expanduser(os.getenv("FRENCH_DIR", DEFAULT_FRENCH_DIR)))
 FRENCH_DIR.mkdir(parents=True, exist_ok=True)
 EXPRESSIONS_FILE = FRENCH_DIR / "expressions.json"
+LAST_ACTION_FILE = FRENCH_DIR / ".fr_last_action.json"
 
 LOG_DIR = Path(os.path.expanduser(os.getenv("FRENCH_LOG_DIR", SCRIPT_DIR.parent / "logs")))
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -66,6 +67,20 @@ def save_expressions(expressions):
     with open(EXPRESSIONS_FILE, 'w', encoding='utf-8') as f:
         json.dump(sorted_expressions, f, indent=2, ensure_ascii=False)
 
+def save_last_action(action_data):
+    with open(LAST_ACTION_FILE, 'w') as f:
+        json.dump(action_data, f)
+
+def load_last_action():
+    if not LAST_ACTION_FILE.exists():
+        return None
+    with open(LAST_ACTION_FILE, 'r') as f:
+        return json.load(f)
+
+def clear_last_action():
+    if LAST_ACTION_FILE.exists():
+        LAST_ACTION_FILE.unlink()
+
 def get_anki_connect():
     if AnkiConnect is None:
         raise ImportError("Could not import anki.py. Make sure it's in the same directory.")
@@ -74,33 +89,40 @@ def get_anki_connect():
         raise ConnectionError("Could not connect to Anki. Is Anki running with AnkiConnect installed?")
     return anki
 
-def enrich_with_ai(phrase, lang):
+def enrich_with_ai(phrase, lang, context=None, grammar=None):
     """Use AI to get structured data for a French word or phrase."""
     if not OPENAI_API_KEY:
         raise ValueError("OPENAI_API_KEY not found in environment variables")
 
     lang_map = {'fr': 'French', 'en': 'English', 'zh': 'Chinese'}
-    prompt = f"""
-You are a French language expert. A student has given you a word/phrase in {lang_map.get(lang, 'French')}.
-The phrase is: "{phrase}"
+    
+    prompt_parts = [
+        f"You are a French language expert. A student has given you a word/phrase in {lang_map.get(lang, 'French')}.",
+        f"- The phrase is: \"{phrase}\"",
+    ]
+    if context:
+        prompt_parts.append(f"- The student saw it in this context: \"{context}\" ")
+    if grammar:
+        prompt_parts.append(f"- The student added this grammar note: \"{grammar}\" ")
 
-Your task is to return a JSON object with the following fields for the corresponding FRENCH expression:
-- "expression": The French expression.
-- "translation": A natural English translation.
-- "register": The language register (e.g., "formal", "informal", "slang", "verlan").
-- "usage": A short, practical explanation of when to use it.
-- "example": A single, useful example sentence in French.
-- "example_translation": The English translation of the example sentence.
-- "notes": Any brief cultural context or notes.
+    prompt_parts.extend([
+        "\nYour task is to return a JSON object with the following fields for the corresponding FRENCH expression:",
+        "- \"expression\": The French expression.",
+        "- \"translation\": A natural English translation.",
+        "- \"example\": A single, useful example sentence in French. If context was provided, use it to inspire your example.",
+        "- \"example_translation\": The English translation of the example sentence.",
+        "- \"notes\": Any brief cultural context or grammar notes. If the student provided a grammar note, expand on it here.",
+        "\nReturn ONLY the valid JSON object."
+    ])
+    
+    prompt = "\n".join(prompt_parts)
 
-Return ONLY the valid JSON object.
-"""
     try:
         response = requests.post(
             'https://api.openai.com/v1/chat/completions',
             headers={'Authorization': f'Bearer {OPENAI_API_KEY}', 'Content-Type': 'application/json'},
             json={'model': 'gpt-3.5-turbo', 'messages': [{'role': 'user', 'content': prompt}], 'temperature': 0.5},
-            timeout=30
+            timeout=45
         )
         response.raise_for_status()
         result = response.json()['choices'][0]['message']['content'].strip()
@@ -115,22 +137,25 @@ def cmd_new(args):
     """Adds a new, AI-enriched expression to the list."""
     print(f"Creating new entry for '{args.phrase}'...")
     try:
-        ai_data = enrich_with_ai(args.phrase, args.lang)
+        ai_data = enrich_with_ai(args.phrase, args.lang, args.context, args.grammar)
         expression = ai_data.get('expression')
         if not expression:
             raise ValueError("AI did not return a valid expression.")
 
         expressions = load_expressions()
-        if expression.lower() in expressions:
+        expression_key = expression.lower()
+        if expression_key in expressions:
             print(f"{Colors.YELLOW}⚠ This expression already exists.{Colors.END}")
             return
 
         print(f"  {Colors.BLUE}Expression:{Colors.END} {expression}")
         print(f"  {Colors.BLUE}Translation:{Colors.END} {ai_data.get('translation')}")
-        print(f"  {Colors.BLUE}Register:{Colors.END} {ai_data.get('register')}")
+        if ai_data.get('example'):
+            print(f"  {Colors.BLUE}Example:{Colors.END} {ai_data.get('example')}")
+        if ai_data.get('notes'):
+            print(f"  {Colors.BLUE}Notes:{Colors.END} {ai_data.get('notes')[:100]}...")
 
-        # Prepare new entry
-        expressions[expression.lower()] = {
+        expressions[expression_key] = {
             'expression': expression,
             'translation': ai_data.get('translation', ''),
             'register': ai_data.get('register', ''),
@@ -142,7 +167,8 @@ def cmd_new(args):
         }
         
         save_expressions(expressions)
-        print(f"\n{Colors.GREEN}✓{Colors.END} Successfully added '{expression}' to your list.")
+        save_last_action({'type': 'new', 'key': expression_key})
+        print(f"\n{Colors.GREEN}✓{Colors.END} Successfully added '{expression}'. You can use `fr undo` to revert.")
         print("  Run `fr sync` to add it to Anki.")
 
     except Exception as e:
@@ -160,7 +186,7 @@ def cmd_list(args):
     
     for i, (key, data) in enumerate(list(expressions.items())[:limit], 1):
         anki_status = f"{Colors.GREEN}✓{Colors.END}" if data.get('anki_note_id') else f"{Colors.YELLOW}○{Colors.END}"
-        print(f"\n{i}. {anki_status} {Colors.BOLD}{data.get('expression', key)}{Colors.END} ({data.get('register')})")
+        print(f"\n{i}. {anki_status} {Colors.BOLD}{data.get('expression', key)}{Colors.END}")
         print(f"   → {data.get('translation')}")
 
 def cmd_sync(args):
@@ -231,14 +257,38 @@ def cmd_setup_anki(args):
     except (ConnectionError, ImportError) as e:
         print(f"{Colors.RED}✗ Error:{Colors.END} {e}")
 
+def cmd_undo(args):
+    """Undoes the last 'new' action."""
+    last_action = load_last_action()
+    if not last_action or last_action.get('type') != 'new':
+        print(f"{Colors.YELLOW}No 'new' action to undo.{Colors.END}")
+        return
+
+    key_to_remove = last_action.get('key')
+    if not key_to_remove:
+        print(f"{Colors.RED}✗ Undo failed: last action had no key.{Colors.END}")
+        return
+
+    expressions = load_expressions()
+    if key_to_remove in expressions:
+        removed_item = expressions.pop(key_to_remove)
+        save_expressions(expressions)
+        print(f"{Colors.GREEN}✓{Colors.END} Undid the addition of '{removed_item.get('expression')}'.")
+        clear_last_action()
+    else:
+        print(f"{Colors.YELLOW}⚠ Could not find '{key_to_remove}' to undo. It may have already been removed.{Colors.END}")
+        clear_last_action()
+
 def main():
-    parser = argparse.ArgumentParser(description='French Expressions CLI Tool')
+    parser = argparse.ArgumentParser(description='French Expressions CLI Tool', formatter_class=argparse.RawTextHelpFormatter)
     subparsers = parser.add_subparsers(dest='command', help='Commands')
 
     # fr new
     new_parser = subparsers.add_parser('new', help='Add a new, AI-enriched expression')
     new_parser.add_argument('phrase', help='The expression to add (in French, English, etc.)')
     new_parser.add_argument('-l', '--lang', choices=['fr', 'en', 'zh'], default='fr', help='Language of the input phrase')
+    new_parser.add_argument('-c', '--context', help='Provide context (e.g., a sentence) where you saw the phrase')
+    new_parser.add_argument('-g', '--grammar', help='Add a specific grammar note for the AI to expand on')
 
     # fr list
     list_parser = subparsers.add_parser('list', help='List the most recent expressions')
@@ -249,6 +299,9 @@ def main():
 
     # fr setup-anki
     setup_parser = subparsers.add_parser('setup-anki', help='One-time setup for Anki')
+
+    # fr undo
+    undo_parser = subparsers.add_parser('undo', help='Undo the last expression addition')
 
     args = parser.parse_args()
 
@@ -262,6 +315,7 @@ def main():
             'list': cmd_list,
             'sync': cmd_sync,
             'setup-anki': cmd_setup_anki,
+            'undo': cmd_undo,
         }
         commands[args.command](args)
     except Exception as e:

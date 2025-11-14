@@ -1,0 +1,43 @@
+{
+  "language": "french",
+  "language_full": "French",
+  "command_alias": "fr",
+  "case_insensitive_keys": true,
+  "default_input_lang": "fr",
+  "levels": {
+    "type": "CEFR",
+    "values": ["A1", "A2", "B1", "B2", "C1", "C2"],
+    "default": "A1"
+  },
+  "fields": {
+    "primary": "expression",
+    "phonetic": null,
+    "translation": "translation",
+    "example": "examples",
+    "example_translation": "examples",
+    "grammar": "notes"
+  },
+  "anki": {
+    "model_name": "French (CLI)",
+    "deck_name": "French",
+    "deck_prefix": "",
+    "tag_prefix": "french",
+    "use_levels": false,
+    "field_mapping": {
+      "expression": "Expression",
+      "translation": "English",
+      "examples": "Example",
+      "notes": "Notes",
+      "register": "Register",
+      "usage": "Usage"
+    }
+  },
+  "storage": {
+    "vocab_file": "expressions.json",
+    "config_file": ".fr_config.json",
+    "data_dir": "fr"
+  },
+  "ai": {
+    "prompt_template": "You are a {language_full} language expert. A student has given you a word/phrase. The phrase is: \"{phrase}\" (input language: {lang})."
+  }
+}

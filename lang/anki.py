@@ -96,8 +96,8 @@ class AnkiConnect:
 def setup_chinese_model(anki_connect):
     """Ensure the Chinese note type exists with an improved layout"""
     model_name = "Chinese (CLI)"
+    fields = ["Hanzi", "Pinyin", "English", "ExampleSentence", "ExampleTranslation", "Lesson"]
     
-    # Define the new template and CSS
     new_card_template = {
         "Name": "Recognition (EN -> CN)",
         "Front": """
@@ -132,113 +132,39 @@ def setup_chinese_model(anki_connect):
     color: #333;
     background-color: #f7f7f7;
 }
-
-.front-english {
-    font-size: 28px;
-    padding: 10px;
-}
-
-.front-example {
-    font-size: 18px;
-    color: #666;
-    font-style: italic;
-    padding: 10px;
-}
-
-.hanzi {
-    font-size: 60px;
-    font-weight: bold;
-    margin-top: 10px;
-    margin-bottom: 10px;
-}
-
-.pinyin {
-    font-size: 24px;
-    color: #666;
-    margin-bottom: 20px;
-}
-
-.example-section {
-    border-top: 1px solid #e5e5e5;
-    padding: 15px;
-    margin: 20px auto 0 auto;
-    max-width: 80%;
-    background-color: #fff;
-    border-radius: 8px;
-}
-
-.example-hanzi {
-    font-size: 22px;
-    font-weight: 500;
-    color: #333; /* Explicitly set color for normal mode */
-}
-
-.lesson-tag {
-    position: absolute;
-    bottom: 5px;
-    right: 10px;
-    font-size: 12px;
-    color: #aaa;
-    background-color: #eee;
-    padding: 2px 6px;
-    border-radius: 4px;
-}
+.front-english { font-size: 28px; padding: 10px; }
+.front-example { font-size: 18px; color: #666; font-style: italic; padding: 10px; }
+.hanzi { font-size: 60px; font-weight: bold; margin-top: 10px; margin-bottom: 10px; }
+.pinyin { font-size: 24px; color: #666; margin-bottom: 20px; }
+.example-section { border-top: 1px solid #e5e5e5; padding: 15px; margin: 20px auto 0 auto; max-width: 80%; background-color: #fff; border-radius: 8px; }
+.example-hanzi { font-size: 22px; font-weight: 500; color: #333; }
+.lesson-tag { position: absolute; bottom: 5px; right: 10px; font-size: 12px; color: #aaa; background-color: #eee; padding: 2px 6px; border-radius: 4px; }
 
 /* --- Night Mode Styles --- */
-.nightMode .card {
-    background-color: #2f343a;
-    color: #f0f0f0;
-}
-
-.nightMode .front-example {
-    color: #ccc;
-}
-
-.nightMode .pinyin {
-    color: #ccc;
-}
-
-.nightMode .example-section {
-    background-color: #3a3f45;
-    border-top: 1px solid #555;
-}
-
-.nightMode .example-hanzi {
-    color: #f0f0f0;
-}
-
-.nightMode .lesson-tag {
-    background-color: #555;
-    color: #ccc;
-}
+.nightMode .card { background-color: #2f343a; color: #f0f0f0; }
+.nightMode .front-example { color: #ccc; }
+.nightMode .pinyin { color: #ccc; }
+.nightMode .example-section { background-color: #3a3f45; border-top: 1px solid #555; }
+.nightMode .example-hanzi { color: #f0f0f0; }
+.nightMode .lesson-tag { background-color: #555; color: #ccc; }
 """
     
-    # Check if model exists
     if model_name not in anki_connect.get_model_names():
         logger.info(f"Creating Anki model: {model_name}")
         anki_connect.create_model(
             model_name=model_name,
-            in_order_fields=["Hanzi", "Pinyin", "English", "ExampleSentence", "ExampleTranslation", "Lesson"],
+            in_order_fields=fields,
             card_templates=[new_card_template],
             css=new_css
         )
         return True
     else:
-        # If model exists, update its template and styling
-        logger.info(f"Updating Anki model: {model_name}")
+        logger.info(f"Updating Anki model styling and template: {model_name}")
         anki_connect._invoke('updateModelTemplates', model={
             "name": model_name,
-            "templates": {
-                new_card_template['Name']: {
-                    'Front': new_card_template['Front'],
-                    'Back': new_card_template['Back']
-                }
-            }
+            "templates": { new_card_template['Name']: { 'Front': new_card_template['Front'], 'Back': new_card_template['Back'] } }
         })
-        anki_connect._invoke('updateModelStyling', model={
-            "name": model_name,
-            "css": new_css
-        })
+        anki_connect._invoke('updateModelStyling', model={ "name": model_name, "css": new_css })
         return False
 
 def setup_french_model(anki_connect):
