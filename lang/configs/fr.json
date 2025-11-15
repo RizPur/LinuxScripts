@@ -13,8 +13,8 @@
     "primary": "expression",
     "phonetic": null,
     "translation": "translation",
-    "example": "examples",
-    "example_translation": "examples",
+    "example": "example",
+    "example_translation": "example_translation",
     "grammar": "notes"
   },
   "anki": {
@@ -26,7 +26,8 @@
     "field_mapping": {
       "expression": "Expression",
       "translation": "English",
-      "examples": "Example",
+      "example": "Example",
+      "example_translation": "ExampleTranslation",
       "notes": "Notes",
       "register": "Register",
       "usage": "Usage"

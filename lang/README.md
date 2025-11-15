@@ -102,3 +102,32 @@ The French tool is simpler and designed for quickly capturing and understanding 
 
 - **`fr sync`**
   Syncs all new expressions from your `expressions.json` file to Anki into a "French" deck.
+
+
+  ┌─────────────────────────────────────────────────────────┐
+  │                    User Commands                         │
+  │         cn new "在"              fr new "bonjour"        │
+  └────────────────┬─────────────────────┬──────────────────┘
+                   │                     │
+                   ▼                     ▼
+          ┌────────────────┐    ┌────────────────┐
+          │  cn_wrapper.sh │    │  fr_wrapper.sh │
+          │                │    │                │
+          │ Calls:         │    │ Calls:         │
+          │ lang.py cn ... │    │ lang.py fr ... │
+          └────────┬───────┘    └────────┬───────┘
+                   │                     │
+                   └──────────┬──────────┘
+                              ▼
+                     ┌─────────────────┐
+                     │    lang.py      │
+                     │ (Unified Logic) │
+                     └────────┬────────┘
+                              │
+                ┌─────────────┼─────────────┐
+                ▼             ▼             ▼
+        ┌──────────┐  ┌──────────┐  ┌──────────┐
+        │ configs/ │  │   Data   │  │  anki.py │
+        │  cn.json │  │  Storage │  │ (Anki    │
+        │  fr.json │  │          │  │  Sync)   │
+        └──────────┘  └──────────┘  └──────────┘

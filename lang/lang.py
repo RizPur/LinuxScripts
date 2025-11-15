@@ -230,9 +230,34 @@ def cmd_new(ctx, args):
         # Use lowercase as key for case-insensitive lookups
         lookup_key = primary_key.lower() if ctx.config.get('case_insensitive_keys', True) else primary_key
 
-        if lookup_key in vocab_data:
-            print(f"{Colors.YELLOW}⚠ This word already exists.{Colors.END}")
+        if lookup_key in vocab_data and not args.force:
+            # Show existing entry details
+            existing = vocab_data[lookup_key]
+            print(f"{Colors.YELLOW}⚠ This word already exists:{Colors.END}")
+            print(f"  {Colors.BOLD}{existing.get(ctx.fields['primary'])}{Colors.END}", end='')
+
+            # Show phonetic if applicable
+            if ctx.fields.get('phonetic') and existing.get(ctx.fields['phonetic']):
+                print(f" ({existing.get(ctx.fields['phonetic'])})", end='')
+
+            # Show translation
+            translation = existing.get(ctx.fields['translation']) or existing.get('translation', '')
+            print(f" — {translation}")
+
+            # Show example
+            example = existing.get(ctx.fields['example']) or existing.get('examples', '')
+            if isinstance(example, list) and example:
+                # Handle French-style array
+                example = example[0].split('|')[0].strip() if '|' in example[0] else example[0]
+            if example:
+                print(f"  {Colors.BLUE}Example:{Colors.END} {example}")
+
+            print(f"\n{Colors.BLUE}Tip:{Colors.END} Use `cn new \"...\" --force` to replace this entry.")
             return
+
+        # If --force is used, we'll overwrite the existing entry
+        if lookup_key in vocab_data and args.force:
+            print(f"{Colors.YELLOW}⚠ Replacing existing entry for '{primary_key}'{Colors.END}")
 
         # Display what was enriched
         print(f"  {Colors.BLUE}{ctx.fields['primary']}:{Colors.END} {primary_key}")
@@ -327,9 +352,12 @@ def cmd_sync(ctx, args):
         print(f"{Colors.GREEN}✓{Colors.END} All vocabulary is already synced.")
         return
 
-    print(f"Found {len(words_to_sync)} new words to sync...")
+    # Always update by default - if word is in JSON without AnkiNoteID,
+    # it's likely from bulk import and we want to add our enriched data
+    print(f"Found {len(words_to_sync)} words to sync...")
 
     created_count, failed_count = 0, 0
+    updated_count = 0
 
     for i, word in enumerate(words_to_sync, 1):
         # Determine deck name
@@ -399,23 +427,50 @@ def cmd_sync(ctx, args):
             else:
                 tag = ctx.anki_config['tag_prefix']
 
-            note_id = anki.add_note(deck_name, ctx.anki_config['model_name'], anki_fields, tags=[tag])
+            # Check if note already exists in Anki (search by primary field)
+            primary_value = word.get(ctx.fields['primary'], '')
+            search_field = field_mapping.get(ctx.fields['primary'], ctx.fields['primary'])
+            # Search across all decks first, then filter if needed
+            query = f'{search_field}:{primary_value}'
 
-            # Update vocab with Anki note ID
-            for key, entry in vocab_data.items():
-                if entry.get(ctx.fields['primary']) == word.get(ctx.fields['primary']):
-                    vocab_data[key]['AnkiNoteID'] = note_id
-                    break
+            existing_notes = anki.find_notes(query)
 
-            created_count += 1
-            print(f"  [{i}/{len(words_to_sync)}] {Colors.GREEN}✓{Colors.END} Synced '{word.get(ctx.fields['primary'])}'")
+            if existing_notes:
+                # Note already exists - update it with our data
+                note_id = existing_notes[0]
+                anki.update_note_fields(note_id, anki_fields)
+                updated_count += 1
+                print(f"  [{i}/{len(words_to_sync)}] {Colors.YELLOW}↻{Colors.END} Updated '{primary_value}'")
+
+                # Mark the note ID in our data
+                for key, entry in vocab_data.items():
+                    if entry.get(ctx.fields['primary']) == primary_value:
+                        vocab_data[key]['AnkiNoteID'] = note_id
+                        break
+            else:
+                # Add new note
+                note_id = anki.add_note(deck_name, ctx.anki_config['model_name'], anki_fields, tags=[tag])
+
+                # Update vocab with Anki note ID
+                for key, entry in vocab_data.items():
+                    if entry.get(ctx.fields['primary']) == primary_value:
+                        vocab_data[key]['AnkiNoteID'] = note_id
+                        break
+
+                created_count += 1
+                print(f"  [{i}/{len(words_to_sync)}] {Colors.GREEN}✓{Colors.END} Synced '{primary_value}'")
 
         except Exception as e:
             failed_count += 1
             print(f"  [{i}/{len(words_to_sync)}] {Colors.RED}✗{Colors.END} Failed to sync '{word.get(ctx.fields['primary'], 'Unknown')}': {e}")
 
     save_vocab_data(ctx, vocab_data)
-    print(f"\n{Colors.BOLD}Sync complete!{Colors.END}\n  {Colors.GREEN}Added: {created_count}{Colors.END}, {Colors.RED}Failed: {failed_count}{Colors.END}")
+    summary = f"\n{Colors.BOLD}Sync complete!{Colors.END}\n  {Colors.GREEN}Added: {created_count}{Colors.END}"
+    if updated_count > 0:
+        summary += f", {Colors.YELLOW}Updated: {updated_count}{Colors.END}"
+    if failed_count > 0:
+        summary += f", {Colors.RED}Failed: {failed_count}{Colors.END}"
+    print(summary)
 
 def cmd_setup_anki(ctx, args):
     """Setup Anki integration."""
@@ -516,13 +571,14 @@ def main():
                            help='The language of the input phrase')
     new_parser.add_argument('-c', '--context', help='Provide context where you saw the phrase')
     new_parser.add_argument('-g', '--grammar', help='Add a specific grammar note')
+    new_parser.add_argument('--force', action='store_true', help='Replace existing entry if it already exists')
 
     # vocab command
     vocab_parser = subparsers.add_parser('vocab', help='Show recent vocabulary')
     vocab_parser.add_argument('-n', '--limit', type=int, help='Number of words to show (default: 5)')
 
     # sync command
-    sync_parser = subparsers.add_parser('sync', help='Sync new words to Anki')
+    sync_parser = subparsers.add_parser('sync', help='Sync new words to Anki (creates new or updates existing)')
 
     # setup-anki command
     setup_parser = subparsers.add_parser('setup-anki', help='One-time setup for Anki')
