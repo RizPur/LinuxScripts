@@ -6,8 +6,13 @@
   "default_input_lang": "fr",
   "levels": {
     "type": "CEFR",
-    "values": ["A1", "A2", "B1", "B2", "C1", "C2"],
-    "default": "A1"
+    "values": ["0", "1", "9"],
+    "default": "1",
+    "special": {
+      "0": "Misc",
+      "1": "Vocab",
+      "9": "Expressions"
+    }
   },
   "fields": {
     "primary": "expression",

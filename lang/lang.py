@@ -163,9 +163,6 @@ def enrich_with_ai(ctx, phrase, lang, level, context=None, grammar=None):
             )
         ]
 
-    if context:
-        prompt_parts.append(f"- The student saw it in this context: \"{context}\"")
-
     # Describe expected JSON output based on config fields
     prompt_parts.extend([
         f"\nYour task is to return a JSON object with the following fields:",
@@ -175,11 +172,20 @@ def enrich_with_ai(ctx, phrase, lang, level, context=None, grammar=None):
     if ctx.fields.get('phonetic'):
         prompt_parts.append(f"- \"{ctx.fields['phonetic']}\": Pronunciation/romanization.")
 
-    prompt_parts.extend([
-        f"- \"{ctx.fields['translation']}\": English translation.",
-        f"- \"{ctx.fields['example']}\": A simple example sentence in {ctx.language_full}.",
-        f"- \"{ctx.fields['example_translation']}\": English translation of the example.",
-    ])
+    prompt_parts.append(f"- \"{ctx.fields['translation']}\": English translation.")
+
+    # Handle context-based examples
+    if context:
+        prompt_parts.extend([
+            f"- The student saw it in this context: \"{context}\"",
+            f"- \"{ctx.fields['example']}\": Return the context sentence EXACTLY as written above. Do not fix grammar, do not formalize contractions (like J'suis, j'ai), do not replace slang with standard words. Copy it verbatim, including the phrase/expression being learned.",
+            f"- \"{ctx.fields['example_translation']}\": English translation of the example sentence.",
+        ])
+    else:
+        prompt_parts.extend([
+            f"- \"{ctx.fields['example']}\": A simple example sentence in {ctx.language_full} appropriate for {ctx.levels['type']} Level {level}.",
+            f"- \"{ctx.fields['example_translation']}\": English translation of the example.",
+        ])
 
     if grammar:
         prompt_parts.append(f"- The student added this grammar note: \"{grammar}\"")
@@ -215,7 +221,17 @@ def cmd_level(ctx, args):
 def cmd_new(ctx, args):
     """Add a new vocabulary item."""
     user_config = load_user_config(ctx)
-    current_level = user_config.get('current_level', ctx.levels['default'])
+
+    # Use --level flag if provided, otherwise use current level from config
+    if args.level is not None:
+        # Convert to int if needed (for Chinese HSK levels)
+        try:
+            current_level = int(args.level)
+        except (ValueError, TypeError):
+            current_level = args.level
+    else:
+        current_level = user_config.get('current_level', ctx.levels['default'])
+
     print(f"Adding new word with {ctx.levels['type']} {current_level} context...")
 
     try:
@@ -252,7 +268,7 @@ def cmd_new(ctx, args):
             if example:
                 print(f"  {Colors.BLUE}Example:{Colors.END} {example}")
 
-            print(f"\n{Colors.BLUE}Tip:{Colors.END} Use `cn new \"...\" --force` to replace this entry.")
+            print(f"\n{Colors.BLUE}Tip:{Colors.END} Use `{ctx.config['command_alias']} new \"...\" --force` to replace this entry.")
             return
 
         # If --force is used, we'll overwrite the existing entry
@@ -272,8 +288,8 @@ def cmd_new(ctx, args):
             print(f"           {ai_data.get(ctx.fields['example_translation'])}")
 
         if ai_data.get(ctx.fields['grammar']):
-            grammar_preview = ai_data.get(ctx.fields['grammar'])[:100]
-            print(f"  {Colors.BLUE}Grammar:{Colors.END} {grammar_preview}...")
+            grammar_text = ai_data.get(ctx.fields['grammar'])
+            print(f"  {Colors.BLUE}Grammar:{Colors.END} {grammar_text}")
 
         # Build vocab entry
         entry = {
@@ -366,10 +382,30 @@ def cmd_sync(ctx, args):
         if use_levels:
             # Handle backward compatibility with legacy field names
             level = word.get('Level') or word.get('HSKLevel') or word.get('CEFRLevel') or ctx.levels['default']
-            deck_name = f"{ctx.anki_config['deck_prefix']}{level}"
+
+            # Check if this is a special level (0=Misc, 9=Expressions, etc.)
+            special_levels = ctx.levels.get('special', {})
+            level_str = str(level)
+
+            if level_str in special_levels:
+                # Use special deck name for special levels
+                deck_name = f"{ctx.anki_config['deck_prefix']}{special_levels[level_str]}"
+            else:
+                # Use regular level-based deck name
+                deck_name = f"{ctx.anki_config['deck_prefix']}{level}"
         else:
-            # Use single deck for languages like French
-            deck_name = ctx.anki_config.get('deck_name', ctx.anki_config['deck_prefix'])
+            # For non-level-based languages, check for special levels
+            level = word.get('Level') or ctx.levels['default']
+            special_levels = ctx.levels.get('special', {})
+            level_str = str(level)
+
+            if level_str in special_levels:
+                # Use special deck name
+                deck_base = ctx.anki_config.get('deck_name', ctx.anki_config.get('deck_prefix', ctx.language_full))
+                deck_name = f"{deck_base}::{special_levels[level_str]}"
+            else:
+                # Use single deck
+                deck_name = ctx.anki_config.get('deck_name', ctx.anki_config['deck_prefix'])
 
         try:
             # Create deck if needed
@@ -567,10 +603,11 @@ def main():
     # new command
     new_parser = subparsers.add_parser('new', help='Add a new word or phrase using AI')
     new_parser.add_argument('phrase', help='The word or phrase to add')
-    new_parser.add_argument('-l', '--lang', default=ctx.config.get('default_input_lang', 'en'),
+    new_parser.add_argument('--lang', default=ctx.config.get('default_input_lang', 'en'),
                            help='The language of the input phrase')
     new_parser.add_argument('-c', '--context', help='Provide context where you saw the phrase')
     new_parser.add_argument('-g', '--grammar', help='Add a specific grammar note')
+    new_parser.add_argument('-l', '--level', help=f'Override the current {ctx.levels["type"]} level for this word only')
     new_parser.add_argument('--force', action='store_true', help='Replace existing entry if it already exists')
 
     # vocab command

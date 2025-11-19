@@ -6,27 +6,33 @@
   "default_input_lang": "en",
   "levels": {
     "type": "HSK",
-    "values": [1, 2, 3, 4, 5, 6],
-    "default": 1
+    "values": [0, 1, 2, 3, 4, 5, 6, 9],
+    "default": 1,
+    "special": {
+      "0": "Misc",
+      "9": "Expressions"
+    }
   },
   "fields": {
-    "primary": "Hanzi",
-    "phonetic": "Pinyin",
-    "translation": "English",
-    "example": "ExampleSentence",
-    "example_translation": "ExampleTranslation",
-    "grammar": "Grammar"
+    "primary": "hanzi",
+    "phonetic": "pinyin",
+    "translation": "translation",
+    "example": "example",
+    "example_translation": "example_translation",
+    "grammar": "grammar"
   },
   "anki": {
     "model_name": "Chinese (CLI)",
     "deck_prefix": "Chinese::HSK",
     "tag_prefix": "hsk",
+    "use_levels": true,
     "field_mapping": {
-      "Hanzi": "Hanzi",
-      "Pinyin": "Pinyin",
-      "English": "English",
-      "ExampleSentence": "ExampleSentence",
-      "ExampleTranslation": "ExampleTranslation",
+      "hanzi": "Hanzi",
+      "pinyin": "Pinyin",
+      "translation": "English",
+      "example": "ExampleSentence",
+      "example_translation": "ExampleTranslation",
+      "grammar": "Grammar",
       "Lesson": "Lesson"
     }
   },
