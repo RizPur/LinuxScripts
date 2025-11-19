@@ -6,7 +6,40 @@ This directory contains powerful command-line tools for learning Chinese (`cn`) 
 
 Before using the scripts, you need to complete a one-time setup.
 
-### a. Configure Environment Variables
+### a. Set Up Python Environment
+
+1.  Create a virtual environment:
+    ```bash
+    # Navigate to the lang directory
+    cd lang
+
+    # Create virtual environment
+    python3 -m venv venv
+    ```
+
+2.  Activate the virtual environment:
+
+    **Linux/macOS:**
+    ```bash
+    source venv/bin/activate
+    ```
+
+    **Windows (PowerShell):**
+    ```powershell
+    .\venv\Scripts\Activate.ps1
+    ```
+
+    **Windows (Command Prompt):**
+    ```cmd
+    venv\Scripts\activate.bat
+    ```
+
+3.  Install dependencies:
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+### b. Configure Environment Variables
 
 1.  Copy the example environment file:
     ```bash
@@ -19,14 +52,42 @@ Before using the scripts, you need to complete a one-time setup.
     ```
 3.  The default paths for vocabulary files are set to save within `lang/zh` and `lang/fr`. You can override these in the `.env` file if you wish.
 
-### b. Install Anki and AnkiConnect
+### c. Install Anki and AnkiConnect
 
-1.  Download and install the **Anki desktop application**.
-2.  Inside Anki, go to `Tools > Add-ons`.
-3.  Click `Get Add-ons...` and paste in the code: `2055492159`
-4.  Restart Anki.
+#### Installing Anki
 
-### c. Run the Script Setups
+**Linux (Ubuntu/Debian):**
+```bash
+# Download the latest version from the official website
+# Go to https://apps.ankiweb.net/ and download the Linux package
+
+# Or install via Flatpak (recommended for most distros):
+flatpak install flathub net.ankiweb.Anki
+
+# Or on Ubuntu/Debian, you can use the .deb package:
+# Download from https://apps.ankiweb.net/
+sudo dpkg -i anki-*.deb
+sudo apt-get install -f  # Install any missing dependencies
+```
+
+**Windows:**
+1. Go to [https://apps.ankiweb.net/](https://apps.ankiweb.net/)
+2. Click the **Download** button for Windows
+3. Run the installer (`.exe` file)
+4. Follow the installation wizard
+5. Launch Anki from the Start Menu
+
+#### Installing AnkiConnect Add-on
+
+1.  Open Anki
+2.  Go to `Tools > Add-ons`
+3.  Click `Get Add-ons...`
+4.  Paste in the code: `2055492159`
+5.  Click **OK** and restart Anki
+
+**Note:** Anki must be running for the sync commands to work, as they communicate with Anki through AnkiConnect.
+
+### d. Run the Script Setups
 
 With Anki open, run the setup command for each script. This will create the necessary card templates in Anki.
 
