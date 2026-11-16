@@ -67,7 +67,8 @@ class LanguageContext:
         self.language_full = self.config['language_full']
 
         # Setup paths
-        self.data_dir = SCRIPT_DIR / self.config['storage']['data_dir']
+        data_root = os.getenv('LANG_DATA_DIR')
+        self.data_dir = (Path(data_root) if data_root else SCRIPT_DIR) / self.config['storage']['data_dir']
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
         self.vocab_file = self.data_dir / self.config['storage']['vocab_file']
@@ -471,32 +472,67 @@ def merge_vocab(local, remote):
 
 
 def pull_merge_remote(ctx):
-    """Pull the remote vocab file, merge it into local, and push the union back."""
+    """Pull the remote vocab, merge it into local, and push the union back.
+
+    Transport: HTTP (LANG_REMOTE_URL) if set, else ssh+docker exec (LANG_REMOTE_SSH).
+    """
+    url = os.getenv('LANG_REMOTE_URL')
     ssh_host = os.getenv('LANG_REMOTE_SSH')
-    if not ssh_host:
+    if not url and not ssh_host:
         return
-    container = os.getenv('LANG_REMOTE_CONTAINER', 'open-terminal')
-    remote_dir = os.getenv('LANG_REMOTE_DIR', '/home/user/lang')
-    remote_path = f"{remote_dir}/{ctx.config['storage']['data_dir']}/{ctx.config['storage']['vocab_file']}"
     push = os.getenv('LANG_REMOTE_PUSH', '1').lower() not in ('0', 'false', 'no')
 
-    print(f"{Colors.BLUE}Pulling vocabulary from {ssh_host}...{Colors.END}")
-    try:
-        res = subprocess.run(
-            ['ssh', ssh_host, f'docker exec -i {container} cat {remote_path}'],
-            capture_output=True, text=True, timeout=30,
-        )
-    except Exception as e:
-        print(f"{Colors.YELLOW}\u26a0 Could not reach {ssh_host}: {e}. Syncing local only.{Colors.END}")
-        return
-    if res.returncode != 0 or not res.stdout.strip():
-        print(f"{Colors.YELLOW}\u26a0 No remote vocabulary fetched. Syncing local only.{Colors.END}")
-        return
-    try:
-        remote_data = json.loads(res.stdout)
-    except json.JSONDecodeError:
-        print(f"{Colors.YELLOW}\u26a0 Remote vocabulary was not valid JSON. Skipping.{Colors.END}")
-        return
+    headers = {}
+    auth = None
+    if os.getenv('LANG_REMOTE_TOKEN'):
+        headers['Authorization'] = f"Bearer {os.getenv('LANG_REMOTE_TOKEN')}"
+    if os.getenv('LANG_REMOTE_USER'):
+        auth = (os.getenv('LANG_REMOTE_USER'), os.getenv('LANG_REMOTE_PASS', ''))
+
+    label = url.rstrip('/') if url else ssh_host
+    print(f"{Colors.BLUE}Pulling vocabulary from {label}...{Colors.END}")
+
+    if url:
+        base = url.rstrip('/')
+        try:
+            r = requests.get(f"{base}/api/export", params={'lang': ctx.config['command_alias']},
+                             headers=headers, auth=auth, timeout=30)
+            r.raise_for_status()
+            remote_data = r.json()
+        except Exception as e:
+            print(f"{Colors.YELLOW}\u26a0 Could not reach {label}: {e}. Syncing local only.{Colors.END}")
+            return
+
+        def push_fn(merged):
+            requests.post(f"{base}/api/import",
+                          json={'lang': ctx.config['command_alias'], 'data': merged},
+                          headers=headers, auth=auth, timeout=30).raise_for_status()
+    else:
+        container = os.getenv('LANG_REMOTE_CONTAINER', 'open-terminal')
+        remote_dir = os.getenv('LANG_REMOTE_DIR', '/home/user/lang')
+        remote_path = f"{remote_dir}/{ctx.config['storage']['data_dir']}/{ctx.config['storage']['vocab_file']}"
+        try:
+            res = subprocess.run(
+                ['ssh', ssh_host, f'docker exec -i {container} cat {remote_path}'],
+                capture_output=True, text=True, timeout=30,
+            )
+        except Exception as e:
+            print(f"{Colors.YELLOW}\u26a0 Could not reach {label}: {e}. Syncing local only.{Colors.END}")
+            return
+        if res.returncode != 0 or not res.stdout.strip():
+            print(f"{Colors.YELLOW}\u26a0 No remote vocabulary fetched. Syncing local only.{Colors.END}")
+            return
+        try:
+            remote_data = json.loads(res.stdout)
+        except json.JSONDecodeError:
+            print(f"{Colors.YELLOW}\u26a0 Remote vocabulary was not valid JSON. Skipping.{Colors.END}")
+            return
+
+        def push_fn(merged):
+            subprocess.run(
+                ['ssh', ssh_host, f"docker exec -i {container} sh -c 'cat > {remote_path}'"],
+                input=json.dumps(merged, ensure_ascii=False, indent=2), text=True, timeout=30)
+
     if not isinstance(remote_data, dict):
         print(f"{Colors.YELLOW}\u26a0 Remote vocabulary had unexpected format. Skipping.{Colors.END}")
         return
@@ -505,17 +541,13 @@ def pull_merge_remote(ctx):
     merged, added = merge_vocab(local_data, remote_data)
     if added:
         save_vocab_data(ctx, merged)
-        print(f"{Colors.GREEN}\u2713{Colors.END} Merged {added} new entr{'y' if added == 1 else 'ies'} from {ssh_host}.")
+        print(f"{Colors.GREEN}\u2713{Colors.END} Merged {added} new entr{'y' if added == 1 else 'ies'} from {label}.")
     else:
-        print(f"  No new entries from {ssh_host}.")
+        print(f"  No new entries from {label}.")
 
     if push:
         try:
-            subprocess.run(
-                ['ssh', ssh_host, f"docker exec -i {container} sh -c 'cat > {remote_path}'"],
-                input=json.dumps(merged, ensure_ascii=False, indent=2),
-                text=True, timeout=30,
-            )
+            push_fn(merged)
         except Exception as e:
             print(f"{Colors.YELLOW}\u26a0 Could not push merged vocabulary back: {e}{Colors.END}")
 
