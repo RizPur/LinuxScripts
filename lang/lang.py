@@ -325,23 +325,18 @@ def cmd_new(ctx, args):
         print(f"  {Colors.BLUE}Input language:{Colors.END} {args.lang} (auto-detected)")
 
     reference = None
-    if not args.context:
+    use_reverso = args.reverso if args.reverso is not None else True
+    if use_reverso:
         if reverso is None:
-            if args.reverso:
-                print(f"{Colors.YELLOW}\u26a0 Reverso module unavailable; using AI.{Colors.END}")
+            print(f"{Colors.YELLOW}\u26a0 Reverso module unavailable; using AI.{Colors.END}")
         else:
             try:
                 reference = reverso.best_example(ctx.language, args.lang, args.phrase)
             except Exception as e:
                 ctx.logger.error(f"Reverso lookup failed: {e}")
                 reference = None
-            if args.reverso:
-                if reference:
-                    if reference.get('senses'):
-                        print(f"  {Colors.BLUE}Reverso senses:{Colors.END} " + ", ".join(reference['senses'][:6]))
-                    print(f"  {Colors.BLUE}Reverso example:{Colors.END} {reference['example']}")
-                else:
-                    print(f"{Colors.YELLOW}  No suitable Reverso example found; using AI.{Colors.END}")
+        if not args.context and not reference:
+            print(f"{Colors.YELLOW}  No suitable Reverso example found; using AI.{Colors.END}")
 
     try:
         ai_data = enrich_with_ai(ctx, args.phrase, args.lang, current_level, args.context, args.grammar, reference)
@@ -395,6 +390,13 @@ def cmd_new(ctx, args):
         if ai_data.get(ctx.fields['example']):
             print(f"  {Colors.BLUE}Example:{Colors.END} {ai_data.get(ctx.fields['example'])}")
             print(f"           {ai_data.get(ctx.fields['example_translation'])}")
+
+        # Only show the Reverso source sentence when it differs from the final example
+        if use_reverso and not args.context and reference and reference.get('example'):
+            ref_ex = reference['example'].strip()
+            ai_ex = (ai_data.get(ctx.fields['example']) or '').strip()
+            if ref_ex and ref_ex != ai_ex:
+                print(f"  {Colors.BLUE}Reverso source:{Colors.END} {ref_ex}")
 
         if ai_data.get(ctx.fields['grammar']):
             grammar_text = ai_data.get(ctx.fields['grammar'])
@@ -816,7 +818,10 @@ def main():
     new_parser.add_argument('-g', '--grammar', help='Add a specific grammar note')
     new_parser.add_argument('--level', help=f'Override the current {ctx.levels["type"]} level for this word only')
     new_parser.add_argument('--force', action='store_true', help='Replace existing entry if it already exists')
-    new_parser.add_argument('-r', '--reverso', action='store_true', help='Verbose: show what Reverso found (Reverso is used by default)')
+    new_parser.add_argument('-r', '--reverso', dest='reverso', action='store_true', default=True,
+                            help='Use Reverso examples (enabled by default; use --no-reverso to disable)')
+    new_parser.add_argument('--no-reverso', dest='reverso', action='store_false',
+                            help='Disable Reverso examples, use AI only')
 
     # vocab command
     vocab_parser = subparsers.add_parser('vocab', help='Show recent vocabulary')
