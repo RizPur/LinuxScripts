@@ -5,7 +5,9 @@ Capture, enrich, and sync vocabulary to Anki for any language.
 """
 
 import os
+import re
 import sys
+import subprocess
 import argparse
 import json
 import datetime
@@ -27,13 +29,21 @@ try:
 except ImportError:
     AnkiConnect = None
 
+# Reverso Context integration (unofficial, best-effort)
+try:
+    import reverso
+except ImportError:
+    reverso = None
+
 # --- Configuration ---
 SCRIPT_DIR = Path(__file__).resolve().parent
 CONFIGS_DIR = SCRIPT_DIR / 'configs'
 LOG_DIR = Path(os.path.expanduser(os.getenv("LANG_LOG_DIR", SCRIPT_DIR.parent / "logs")))
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+AI_API_KEY = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
+AI_BASE_URL = os.getenv("AI_BASE_URL", "https://openrouter.ai/api/v1")
+AI_MODEL = os.getenv("AI_MODEL", "openai/gpt-3.5-turbo")
 
 class Colors:
     GREEN, BLUE, YELLOW, RED, BOLD, END = '\033[92m', '\033[94m', '\033[93m', '\033[91m', '\033[1m', '\033[0m'
@@ -136,10 +146,24 @@ def get_anki_connect():
 
 # --- AI Enrichment ---
 
-def enrich_with_ai(ctx, phrase, lang, level, context=None, grammar=None):
+def _parse_ai_json(text):
+    t = text.strip()
+    if t.startswith("```"):
+        t = t.split("```", 2)[1]
+        if t[:4].lower() == "json":
+            t = t[4:]
+        t = t.strip()
+    if not t.startswith("{"):
+        s, e = t.find("{"), t.rfind("}")
+        if s != -1 and e != -1:
+            t = t[s:e + 1]
+    return json.loads(t)
+
+
+def enrich_with_ai(ctx, phrase, lang, level, context=None, grammar=None, reference=None):
     """Use AI to enrich vocabulary with translations, examples, etc."""
-    if not OPENAI_API_KEY:
-        raise ValueError("OPENAI_API_KEY not found.")
+    if not AI_API_KEY:
+        raise ValueError("OPENROUTER_API_KEY not found.")
 
     # Build the prompt using config
     ai_config = ctx.config.get('ai', {})
@@ -181,6 +205,12 @@ def enrich_with_ai(ctx, phrase, lang, level, context=None, grammar=None):
             f"- \"{ctx.fields['example']}\": Return the context sentence EXACTLY as written above. Do not fix grammar, do not formalize contractions (like J'suis, j'ai), do not replace slang with standard words. Copy it verbatim, including the phrase/expression being learned.",
             f"- \"{ctx.fields['example_translation']}\": English translation of the example sentence.",
         ])
+    elif reference:
+        prompt_parts.extend([
+            f"- A real example from a bilingual corpus is: \"{reference.get('example', '')}\" (English: \"{reference.get('translation', '')}\").",
+            f"- \"{ctx.fields['example']}\": Adapt this real example to {ctx.levels['type']} Level {level}. Simplify the sentence if it is too advanced for that level, but keep the phrase/expression \"{phrase}\" and preserve the meaning. Use it as-is if it is already suitable.",
+            f"- \"{ctx.fields['example_translation']}\": English translation of the example you return.",
+        ])
     else:
         prompt_parts.extend([
             f"- \"{ctx.fields['example']}\": A simple example sentence in {ctx.language_full} appropriate for {ctx.levels['type']} Level {level}.",
@@ -198,13 +228,13 @@ def enrich_with_ai(ctx, phrase, lang, level, context=None, grammar=None):
 
     try:
         response = requests.post(
-            'https://api.openai.com/v1/chat/completions',
-            headers={'Authorization': f'Bearer {OPENAI_API_KEY}', 'Content-Type': 'application/json'},
-            json={'model': 'gpt-3.5-turbo', 'messages': [{'role': 'user', 'content': prompt}], 'temperature': 0.5},
+            f'{AI_BASE_URL}/chat/completions',
+            headers={'Authorization': f'Bearer {AI_API_KEY}', 'Content-Type': 'application/json'},
+            json={'model': AI_MODEL, 'messages': [{'role': 'user', 'content': prompt}], 'temperature': 0.5},
             timeout=45
         )
         response.raise_for_status()
-        return json.loads(response.json()['choices'][0]['message']['content'].strip())
+        return _parse_ai_json(response.json()['choices'][0]['message']['content'].strip())
     except Exception as e:
         ctx.logger.error(f"AI enrichment failed: {e}")
         raise
@@ -218,9 +248,66 @@ def cmd_level(ctx, args):
     save_user_config(ctx, user_config)
     print(f"{Colors.GREEN}✓{Colors.END} Set current {ctx.levels['type']} context to {Colors.BOLD}{args.level}{Colors.END}")
 
+FR_WORDS = {
+    "le", "la", "les", "un", "une", "des", "de", "du", "est", "et", "je", "tu",
+    "il", "elle", "on", "nous", "vous", "ils", "elles", "que", "qui", "quoi",
+    "dans", "pour", "avec", "mais", "pas", "ne", "se", "ce", "cet", "cette",
+    "mon", "ma", "mes", "ton", "ta", "tes", "son", "sa", "ses", "au", "aux",
+    "en", "y", "tres", "bien", "tout", "tous", "toute", "plus", "sur", "sous",
+    "entre", "vers", "chez", "sans", "c'est", "j'ai", "n'est", "d'un", "qu'il",
+    "etre", "avoir", "faire", "suis", "es", "sommes", "sont", "etait", "vais",
+    "vas", "va", "allons", "allez", "vont", "moi", "toi", "soi", "lui", "leur",
+    "bonjour", "merci", "oui", "non", "beaucoup", "jamais", "toujours", "gens",
+    "chose", "temps", "jour", "nuit", "maison", "livre", "eau", "ami", "amour",
+    "manger", "boire", "aller", "venir", "voir", "savoir", "penser", "vouloir",
+}
+EN_WORDS = {
+    "the", "a", "an", "of", "is", "are", "was", "were", "be", "been", "to",
+    "and", "or", "in", "on", "at", "that", "this", "these", "those", "it",
+    "its", "for", "with", "you", "your", "i", "my", "me", "we", "our", "they",
+    "their", "he", "she", "his", "her", "not", "no", "yes", "but", "if", "as",
+    "by", "from", "have", "has", "had", "do", "does", "did", "will", "would",
+    "can", "could", "should", "must", "there", "here", "what", "when", "where",
+    "who", "how", "why", "make", "makes", "made", "practice", "perfect", "good",
+    "learn", "study", "work", "time", "word", "water", "book", "house",
+    "friend", "love", "eat", "drink", "run", "go", "come", "see", "know",
+    "think", "want", "need", "hello", "thanks", "please",
+}
+FR_ACCENTS = set("àâäéèêëîïôöùûüçœæ")
+
+
+def detect_input_lang(phrase, ctx):
+    language = ctx.config.get("language")
+    if language == "chinese":
+        return "zh" if re.search(r"[\u3400-\u9fff\uf900-\ufaff]", phrase) else "en"
+    if language == "french":
+        p = phrase.lower()
+        fr = sum(c in FR_ACCENTS for c in p)
+        en = 0
+        for w in re.findall(r"[a-zà-ÿ']+", p):
+            if w in FR_WORDS:
+                fr += 1
+            if w in EN_WORDS:
+                en += 1
+            if w.endswith(("ez", "ais", "ait", "aient")):
+                fr += 1
+            if w.endswith("ing"):
+                en += 1
+        if fr > en:
+            return "fr"
+        if en > fr:
+            return "en"
+    return None
+
+
 def cmd_new(ctx, args):
     """Add a new vocabulary item."""
     user_config = load_user_config(ctx)
+
+    auto_lang = None
+    if args.lang is None:
+        auto_lang = detect_input_lang(args.phrase, ctx)
+        args.lang = auto_lang or ctx.config.get('default_input_lang', 'en')
 
     # Use --level flag if provided, otherwise use current level from config
     if args.level is not None:
@@ -233,9 +320,30 @@ def cmd_new(ctx, args):
         current_level = user_config.get('current_level', ctx.levels['default'])
 
     print(f"Adding new word with {ctx.levels['type']} {current_level} context...")
+    if auto_lang:
+        print(f"  {Colors.BLUE}Input language:{Colors.END} {args.lang} (auto-detected)")
+
+    reference = None
+    if not args.context:
+        if reverso is None:
+            if args.reverso:
+                print(f"{Colors.YELLOW}\u26a0 Reverso module unavailable; using AI.{Colors.END}")
+        else:
+            try:
+                reference = reverso.best_example(ctx.language, args.lang, args.phrase)
+            except Exception as e:
+                ctx.logger.error(f"Reverso lookup failed: {e}")
+                reference = None
+            if args.reverso:
+                if reference:
+                    if reference.get('senses'):
+                        print(f"  {Colors.BLUE}Reverso senses:{Colors.END} " + ", ".join(reference['senses'][:6]))
+                    print(f"  {Colors.BLUE}Reverso example:{Colors.END} {reference['example']}")
+                else:
+                    print(f"{Colors.YELLOW}  No suitable Reverso example found; using AI.{Colors.END}")
 
     try:
-        ai_data = enrich_with_ai(ctx, args.phrase, args.lang, current_level, args.context, args.grammar)
+        ai_data = enrich_with_ai(ctx, args.phrase, args.lang, current_level, args.context, args.grammar, reference)
         primary_key = ai_data.get(ctx.fields['primary'])
 
         if not primary_key:
@@ -347,9 +455,76 @@ def cmd_vocab(ctx, args):
         else:
             print(f"   {translation}")
 
+def merge_vocab(local, remote):
+    """Union vocab dicts by key; on a clash keep the newer 'added' entry."""
+    merged = dict(local)
+    added = 0
+    for key, rentry in remote.items():
+        lentry = merged.get(key)
+        if lentry is None:
+            merged[key] = rentry
+            added += 1
+        elif rentry.get('added', '') > lentry.get('added', ''):
+            merged[key] = rentry
+            added += 1
+    return merged, added
+
+
+def pull_merge_remote(ctx):
+    """Pull the remote vocab file, merge it into local, and push the union back."""
+    ssh_host = os.getenv('LANG_REMOTE_SSH')
+    if not ssh_host:
+        return
+    container = os.getenv('LANG_REMOTE_CONTAINER', 'open-terminal')
+    remote_dir = os.getenv('LANG_REMOTE_DIR', '/home/user/lang')
+    remote_path = f"{remote_dir}/{ctx.config['storage']['data_dir']}/{ctx.config['storage']['vocab_file']}"
+    push = os.getenv('LANG_REMOTE_PUSH', '1').lower() not in ('0', 'false', 'no')
+
+    print(f"{Colors.BLUE}Pulling vocabulary from {ssh_host}...{Colors.END}")
+    try:
+        res = subprocess.run(
+            ['ssh', ssh_host, f'docker exec -i {container} cat {remote_path}'],
+            capture_output=True, text=True, timeout=30,
+        )
+    except Exception as e:
+        print(f"{Colors.YELLOW}\u26a0 Could not reach {ssh_host}: {e}. Syncing local only.{Colors.END}")
+        return
+    if res.returncode != 0 or not res.stdout.strip():
+        print(f"{Colors.YELLOW}\u26a0 No remote vocabulary fetched. Syncing local only.{Colors.END}")
+        return
+    try:
+        remote_data = json.loads(res.stdout)
+    except json.JSONDecodeError:
+        print(f"{Colors.YELLOW}\u26a0 Remote vocabulary was not valid JSON. Skipping.{Colors.END}")
+        return
+    if not isinstance(remote_data, dict):
+        print(f"{Colors.YELLOW}\u26a0 Remote vocabulary had unexpected format. Skipping.{Colors.END}")
+        return
+
+    local_data = load_vocab_data(ctx)
+    merged, added = merge_vocab(local_data, remote_data)
+    if added:
+        save_vocab_data(ctx, merged)
+        print(f"{Colors.GREEN}\u2713{Colors.END} Merged {added} new entr{'y' if added == 1 else 'ies'} from {ssh_host}.")
+    else:
+        print(f"  No new entries from {ssh_host}.")
+
+    if push:
+        try:
+            subprocess.run(
+                ['ssh', ssh_host, f"docker exec -i {container} sh -c 'cat > {remote_path}'"],
+                input=json.dumps(merged, ensure_ascii=False, indent=2),
+                text=True, timeout=30,
+            )
+        except Exception as e:
+            print(f"{Colors.YELLOW}\u26a0 Could not push merged vocabulary back: {e}{Colors.END}")
+
+
 def cmd_sync(ctx, args):
     """Sync vocabulary to Anki."""
     print("Syncing vocabulary to Anki...")
+
+    pull_merge_remote(ctx)
 
     try:
         anki = get_anki_connect()
@@ -603,12 +778,13 @@ def main():
     # new command
     new_parser = subparsers.add_parser('new', help='Add a new word or phrase using AI')
     new_parser.add_argument('phrase', help='The word or phrase to add')
-    new_parser.add_argument('--lang', default=ctx.config.get('default_input_lang', 'en'),
-                           help='The language of the input phrase')
+    new_parser.add_argument('-l', '--lang', default=None,
+                           help='The language of the input phrase (auto-detected if omitted)')
     new_parser.add_argument('-c', '--context', help='Provide context where you saw the phrase')
     new_parser.add_argument('-g', '--grammar', help='Add a specific grammar note')
-    new_parser.add_argument('-l', '--level', help=f'Override the current {ctx.levels["type"]} level for this word only')
+    new_parser.add_argument('--level', help=f'Override the current {ctx.levels["type"]} level for this word only')
     new_parser.add_argument('--force', action='store_true', help='Replace existing entry if it already exists')
+    new_parser.add_argument('-r', '--reverso', action='store_true', help='Verbose: show what Reverso found (Reverso is used by default)')
 
     # vocab command
     vocab_parser = subparsers.add_parser('vocab', help='Show recent vocabulary')
