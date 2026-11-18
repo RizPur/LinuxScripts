@@ -438,6 +438,63 @@ def cmd_new(ctx, args):
     except Exception as e:
         print(f"{Colors.RED}✗ Error adding new word:{Colors.END} {e}")
 
+def cmd_rm(ctx, args):
+    """Delete a word from the vocabulary and its Anki note."""
+    word = args.word
+    vocab_data = load_vocab_data(ctx)
+
+    key = word if word in vocab_data else None
+    if key is None:
+        for k, v in vocab_data.items():
+            if v.get(ctx.fields['primary']) == word:
+                key = k
+                break
+    if key is None:
+        print(f"{Colors.YELLOW}⚠ No entry found for '{word}'.{Colors.END}")
+        return
+
+    entry = vocab_data[key]
+    primary = entry.get(ctx.fields['primary'], key)
+    note_id = entry.get('AnkiNoteID')
+
+    if note_id:
+        try:
+            anki = get_anki_connect()
+            existing = anki.find_notes(f'nid:{note_id}')
+            if existing:
+                anki.delete_notes(existing)
+                print(f"  {Colors.GREEN}✓{Colors.END} Deleted Anki note {note_id}")
+            else:
+                print(f"  {Colors.YELLOW}○{Colors.END} Anki note {note_id} already gone")
+        except Exception as e:
+            print(f"  {Colors.YELLOW}⚠ Could not delete Anki note: {e}{Colors.END}")
+
+    del vocab_data[key]
+    save_vocab_data(ctx, vocab_data)
+
+    url = os.getenv('LANG_REMOTE_URL')
+    if url:
+        headers = {}
+        if os.getenv('LANG_REMOTE_TOKEN'):
+            headers['Authorization'] = f"Bearer {os.getenv('LANG_REMOTE_TOKEN')}"
+        auth = None
+        if os.getenv('LANG_REMOTE_USER'):
+            auth = (os.getenv('LANG_REMOTE_USER'), os.getenv('LANG_REMOTE_PASS', ''))
+        try:
+            r = requests.delete(f"{url.rstrip('/')}/api/words",
+                                params={'lang': ctx.config['command_alias'], 'key': key},
+                                headers=headers, auth=auth, timeout=30)
+            r.raise_for_status()
+            print(f"  {Colors.GREEN}✓{Colors.END} Removed from {url}")
+        except Exception as e:
+            print(f"  {Colors.YELLOW}⚠ Could not remove from remote: {e}{Colors.END}")
+
+    last = load_last_action(ctx)
+    if last and last.get('key') == key:
+        clear_last_action(ctx)
+
+    print(f"{Colors.GREEN}✓{Colors.END} Deleted '{primary}'.")
+
 def cmd_vocab(ctx, args):
     """Show recent vocabulary."""
     limit = args.limit if args.limit else 5
@@ -847,6 +904,10 @@ def main():
     # undo command
     undo_parser = subparsers.add_parser('undo', help='Undo the last word addition')
 
+    # rm command
+    rm_parser = subparsers.add_parser('rm', help='Delete a word (and its Anki note)')
+    rm_parser.add_argument('word', help='The word/phrase to delete')
+
     # Parse args (skip first two: script name and language code)
     args = parser.parse_args(sys.argv[2:])
 
@@ -862,6 +923,7 @@ def main():
             'sync': cmd_sync,
             'setup-anki': cmd_setup_anki,
             'undo': cmd_undo,
+            'rm': cmd_rm,
         }
         commands[args.command](ctx, args)
     except Exception as e:

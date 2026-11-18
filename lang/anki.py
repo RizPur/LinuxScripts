@@ -92,11 +92,15 @@ class AnkiConnect:
         }
         return self._invoke('updateNoteFields', note=note)
 
+    def delete_notes(self, note_ids):
+        """Delete notes by id"""
+        return self._invoke('deleteNotes', notes=note_ids)
+
 # Example usage and setup functions
 def setup_chinese_model(anki_connect):
     """Ensure the Chinese note type exists with an improved layout"""
     model_name = "Chinese (CLI)"
-    fields = ["Hanzi", "Pinyin", "English", "ExampleSentence", "ExampleTranslation", "Lesson"]
+    fields = ["Hanzi", "Pinyin", "English", "ExampleSentence", "ExamplePinyin", "ExampleTranslation", "Lesson"]
     
     new_card_template = {
         "Name": "Recognition (EN -> CN)",
@@ -115,6 +119,7 @@ def setup_chinese_model(anki_connect):
 {{#ExampleSentence}}
 <div class='example-section'>
     <div class='example-hanzi'>{{ExampleSentence}}</div>
+    {{#ExamplePinyin}}<div class='example-pinyin'>{{ExamplePinyin}}</div>{{/ExamplePinyin}}
 </div>
 {{/ExampleSentence}}
 
@@ -138,6 +143,7 @@ def setup_chinese_model(anki_connect):
 .pinyin { font-size: 24px; color: #666; margin-bottom: 20px; }
 .example-section { border-top: 1px solid #e5e5e5; padding: 15px; margin: 20px auto 0 auto; max-width: 80%; background-color: #fff; border-radius: 8px; }
 .example-hanzi { font-size: 22px; font-weight: 500; color: #333; }
+.example-pinyin { font-size: 16px; color: #666; margin-top: 6px; }
 .lesson-tag { position: absolute; bottom: 5px; right: 10px; font-size: 12px; color: #aaa; background-color: #eee; padding: 2px 6px; border-radius: 4px; }
 
 /* --- Night Mode Styles --- */
@@ -146,6 +152,7 @@ def setup_chinese_model(anki_connect):
 .nightMode .pinyin { color: #ccc; }
 .nightMode .example-section { background-color: #3a3f45; border-top: 1px solid #555; }
 .nightMode .example-hanzi { color: #f0f0f0; }
+.nightMode .example-pinyin { color: #ccc; }
 .nightMode .lesson-tag { background-color: #555; color: #ccc; }
 """
     
