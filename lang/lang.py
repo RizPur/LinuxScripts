@@ -218,6 +218,11 @@ def enrich_with_ai(ctx, phrase, lang, level, context=None, grammar=None, referen
             f"- \"{ctx.fields['example_translation']}\": English translation of the example.",
         ])
 
+    if ctx.fields.get('example_pinyin'):
+        prompt_parts.append(
+            f"- \"{ctx.fields['example_pinyin']}\": Pinyin with tone marks for the example sentence, syllables separated by spaces."
+        )
+
     if grammar:
         prompt_parts.append(f"- The student added this grammar note: \"{grammar}\"")
         prompt_parts.append(f"- \"{ctx.fields['grammar']}\": Expand on the student's grammar note.")
@@ -389,6 +394,8 @@ def cmd_new(ctx, args):
 
         if ai_data.get(ctx.fields['example']):
             print(f"  {Colors.BLUE}Example:{Colors.END} {ai_data.get(ctx.fields['example'])}")
+            if ctx.fields.get('example_pinyin') and ai_data.get(ctx.fields['example_pinyin']):
+                print(f"           {ai_data.get(ctx.fields['example_pinyin'])}")
             print(f"           {ai_data.get(ctx.fields['example_translation'])}")
 
         # Only show the Reverso source sentence when it differs from the final example
@@ -417,6 +424,10 @@ def cmd_new(ctx, args):
         # Add phonetic if applicable
         if ctx.fields.get('phonetic'):
             entry[ctx.fields['phonetic']] = ai_data.get(ctx.fields['phonetic'], '')
+
+        # Add example-sentence pinyin if applicable
+        if ctx.fields.get('example_pinyin'):
+            entry[ctx.fields['example_pinyin']] = ai_data.get(ctx.fields['example_pinyin'], '')
 
         vocab_data[lookup_key] = entry
         save_vocab_data(ctx, vocab_data)

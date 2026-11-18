@@ -19,6 +19,7 @@
     "translation": "translation",
     "example": "example",
     "example_translation": "example_translation",
+    "example_pinyin": "example_pinyin",
     "grammar": "grammar"
   },
   "anki": {
@@ -32,6 +33,7 @@
       "translation": "English",
       "example": "ExampleSentence",
       "example_translation": "ExampleTranslation",
+      "example_pinyin": "ExamplePinyin",
       "grammar": "Grammar",
       "Lesson": "Lesson"
     }
